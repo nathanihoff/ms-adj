@@ -144,7 +144,7 @@ pisa <- pisa %>%
          )
 ```
 
-This thesis aims to compare different advanced adjustment methods.
+This thesis aims to compare different advanced adjustment methods. It will compare
 
 \newpage
 
