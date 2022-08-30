@@ -1,0 +1,151 @@
+---
+output:
+  # bookdown::word_document2:
+    # reference_docx: "word-template.docx"
+  bookdown::pdf_document2:
+    toc: no
+    number_sections: no
+    pandoc_args: !expr rmdfiltr::add_wordcount_filter(rmdfiltr::add_citeproc_filter(args = NULL))
+    latex_engine: xelatex
+always_allow_html: true
+header-includes:
+  #- \usepackage{setspace}\doublespace
+  # - \usepackage[nolists, fighead, tabhead]{endfloat}
+  # - \usepackage{endnotes}
+  # - \let\footnote=\endnote
+#- \setlength{\headheight}{14.5pt}
+#- \setlength{\headheight}{13.6pt}
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \lhead{N.I. Hoffmann}
+- \rhead{`r format(Sys.time(), '%B %e, %Y')`}
+# - \newcommand{\beginsupplement}{\setcounter{table}{0}  
+# \renewcommand{\thetable}{A\arabic{table}} \setcounter{figure}{0} 
+# \renewcommand{\thefigure}{A\arabic{figure}}}
+
+editor_options: 
+  chunk_output_type: console
+
+
+citeproc: no
+fontfamily: mathpazo
+# fontsize: 12pt
+geometry: margin=1in
+indent: yes
+link-citations: yes
+linkcolor: blue
+lang: 'en-US'
+
+bibliography: "/Users/nathan/Documents/My Library.bib" 
+# bibliography: "My Library.bib"  
+csl: apa.csl
+# csl: american-sociological-association.csl
+
+title: "Comparing Advanced Adjustment Methods on Clustered Education Data"
+subtitle: "Statistics MS Thesis"
+author:  Nathan I. Hoffmann
+#   | Department of Sociology, UCLA
+date: "`r format(Sys.time(), '%B %e, %Y')`"
+
+
+  
+---
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, cache = T)
+options("yaml.eval.expr" = TRUE)
+
+library(haven)
+library(tidyverse)
+
+knit_hooks$set(inline = function(x) {
+  prettyNum(x, big.mark=",")
+})
+
+
+options("yaml.eval.expr" = TRUE, scipen = 3, digits = 2)
+
+uclablue = '#2774AE'
+gray = '#808080'
+black = '#000000'
+ucla_palette = c(black, uclablue, gray)
+
+# theme_set(theme_cowplot(font_family = 'Palatino') + 
+theme_set(theme_classic(base_family = 'Palatino') + 
+      theme(legend.title=element_blank(), 
+         panel.grid.major.y = element_line('grey80'),
+         legend.background = element_rect(fill = alpha("white", 0.5))
+         ))
+ggplot <- function(...) ggplot2::ggplot(...) + 
+  scale_color_brewer(palette="Dark2") +
+  scale_fill_brewer(palette="Dark2")
+
+kable <- function(...) knitr::kable(..., format.args = list(big.mark = ","))
+```
+
+```{r load}
+# data from mx0.5
+pisa <- readRDS(here('data', 'pisa.rds'))
+
+pisa <- pisa %>%
+  filter(across(c(female,  mom_ed, dad_ed, early_ed, cultural_pos, home_ed, age),
+                ~ !is.na(.x))) %>%
+  mutate(
+    country = case_when(
+       country == '034400' ~ 'Hong Kong',
+       country == '044600'~ 'Macao',
+       country == 'Russian Federation' ~ 'Russia',
+       country == 'United States of America' ~ 'United States',
+       T ~ country
+     ),
+   birth_country = case_when(
+       birth_country == '034400' ~ 'Hong Kong',
+       birth_country == '044600'~ 'Macao',
+       birth_country == 'United States of America' ~ 'United States',
+       T ~ birth_country
+     ),
+   immigrant = case_when(
+    birth_country != country ~ T,
+    birth_country == country ~ F
+    )) %>%
+  # include immigrants with a birth country in the dataset, or non-immigrants
+  filter((immigrant == T & birth_country %in% unique(pisa$country)) | 
+           immigrant == F) %>%
+   mutate(school_id = paste0(year, school_id),
+         village = school_location == 'Village',
+         non_urban = ifelse(!is.na(school_location), school_location %in% c('Village', 'Small Town', 'Town'), NA),
+         match_country = ifelse(immigrant == T, birth_country, country))
+
+
+# Include only match_country with at least 5 imm and 5 non-imm
+n_min <- 5
+match_country_imm <- pisa %>%
+  filter(immigrant == T) %>%
+  group_by(match_country) %>%
+  count() %>% 
+  filter(n >= n_min) %>%
+  pull(match_country)
+
+match_country_nonimm <- pisa %>%
+  filter(immigrant == F) %>%
+  group_by(match_country) %>%
+  count() %>% 
+  filter(n >= n_min) %>%
+  pull(match_country)
+
+pisa <- pisa %>%
+  filter(match_country %in% match_country_imm,
+         match_country %in% match_country_nonimm,
+         # Remove match_country with no immigrants
+         match_country %in% unique(pisa$match_country[pisa$immigrant == T])
+         )
+```
+
+This thesis aims to compare different advanced adjustment methods.
+
+\newpage
+
+# References
