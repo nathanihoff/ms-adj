@@ -144,7 +144,7 @@ pisa <- pisa %>%
          )
 ```
 
-This thesis aims to compare different advanced adjustment methods. It will compare
+This thesis aims to compare different advanced adjustment methods. It will compare mben & Rubins propensity matching, stabilized IPWs, TMLE, double machine learning (Chernozhukov et al 2018), Ratkovic (2021), and BART.
 
 \newpage
 
