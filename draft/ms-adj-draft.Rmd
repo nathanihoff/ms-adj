@@ -41,7 +41,7 @@ bibliography: "/Users/nathan/Documents/My Library.bib"
 csl: apa.csl
 # csl: american-sociological-association.csl
 
-title: "Comparing Advanced Adjustment Methods on Clustered Education Data"
+title: "Comparing Flexible Adjustment Methods for Causal Inference on Nested Survey Data"
 subtitle: "Statistics MS Thesis"
 author:  Nathan I. Hoffmann
 #   | Department of Sociology, UCLA
@@ -58,6 +58,8 @@ date: "`r format(Sys.time(), '%B %e, %Y')`"
 knitr::opts_chunk$set(echo = F, warning = F, message = F, cache = T)
 options("yaml.eval.expr" = TRUE)
 
+library(broom)
+library(knitr)
 library(haven)
 library(tidyverse)
 
@@ -88,10 +90,14 @@ kable <- function(...) knitr::kable(..., format.args = list(big.mark = ","))
 
 ```{r load}
 # data from mx0.5
-pisa <- readRDS(here('data', 'pisa.rds'))
+pisa <- readRDS('/Users/nathan/Google Drive/1 UCLA/Dissertation/diss-prop/data/pisa.rds') %>%
+  mutate(age = as.numeric(age))
 
 pisa <- pisa %>%
-  filter(across(c(female,  mom_ed, dad_ed, early_ed, cultural_pos, home_ed, age),
+  filter(across(c(female,  mom_ed, dad_ed, early_ed, cultural_pos, home_ed, age,
+                  math1, math2, math3, math4, math5,
+                  read1, read2, read3, read4, read5,
+                  scie1, scie2, scie3, scie4, scie5),
                 ~ !is.na(.x))) %>%
   mutate(
     country = case_when(
@@ -141,10 +147,125 @@ pisa <- pisa %>%
          match_country %in% match_country_nonimm,
          # Remove match_country with no immigrants
          match_country %in% unique(pisa$match_country[pisa$immigrant == T])
-         )
+         ) %>%
+  mutate(immigrant = as.numeric(immigrant))
 ```
 
-This thesis aims to compare different advanced adjustment methods. It will compare mben & Rubins propensity matching, stabilized IPWs, TMLE, double machine learning (Chernozhukov et al 2018), Ratkovic (2021), and BART.
+# Abstract
+
+This thesis aims to compare different advanced adjustment methods. It will compare Imben & Rubins propensity matching, stabilized IPWs, TMLE, double machine learning (Chernozhukov et al 2018), Ratkovic (2021), and BART.
+
+# Introduction
+
+Statistical methods for flexible covariate adjustment in causal inference have proliferated in recent years. These methods have a number of strengths over traditional regression methods: They make few functional form assumptions, easily handle large numbers of covariates, and produce interpretable treatment effect estimates. Despite their advantages, these methods remain underutilized by social scientists. Part of the barrier has been lack of familiarity with these methods, with few introductions existing. There has also been little guidance regarding which method is appropriate for particular types of data.  
+
+This paper makes advances on both of these fronts. First, it is a guide to some of the latest methods in flexible covariate adjustment, explaining the methods to a social scientist audience. Second, it compares these methods using a type of data that social scientists frequently encounter, but on which these methods have been rarely applied: nested survey data. It does this by using both simulated data where the treatment effect estimate is known, and then using real-world complex survey data from the Program for International Student Assessment (PISA).  
+
+After presenting OLS regression as a baseline, the paper covers Targeted Maximum Likelihood Estimation, double machine learning (Chernozhukov et al 2018), PLCE (Ratkovic 2022), and BART.
+
+# Overview of Techniques
+
+
+
+# Preliminary Findings
+
+```{r test-sample}
+
+
+set.seed(185)
+pisa_test <- bind_rows(
+  pisa %>%
+    filter(match_country == 'Albania', immigrant == T) %>%
+    select(math1, immigrant, mom_ed, dad_ed,
+                          female, early_ed, cultural_pos, home_ed, age) ,
+    #sample_n(200),
+  pisa %>%
+    filter(match_country == 'Albania', immigrant == F) %>%
+        select(math1, immigrant, mom_ed, dad_ed,
+                          female, early_ed, cultural_pos, home_ed, age) 
+    #sample_n(200)
+  )
+
+# pisa_test <- pisa %>%
+#     filter(match_country == 'Albania') %>%
+#  select(math1, immigrant, mom_ed, dad_ed,
+#                          female, early_ed, cultural_pos, home_ed, age) 
+
+
+#  filter(match_country %in% c('Portugal', 'Germany', 'United States'))
+```
+
+```{r tmle, eval = F}
+# Y = outcome
+# A = binary treatment
+# W = covariates
+
+tmle_out <- with(pisa_test, tmle::tmle(
+                Y = math1,
+                A = as.logical(immigrant),
+                W = select(pisa_test, mom_ed, dad_ed, 
+                          female, early_ed, cultural_pos, home_ed, age),
+                verbose = T))
+tmle_out
+
+# pisa %>%
+#  count(match_country, immigrant) %>% View()
+#   arrange(desc(n))
+
+
+```
+
+```{r dml, eval = F}
+dml_data <- DoubleML::DoubleMLData$new(as.data.frame(pisa_test),
+                y_col = 'math1',
+                d_cols = 'immigrant',
+                x_cols = c('mom_ed', 'dad_ed', 'female', 'early_ed', 
+                'cultural_pos', 'home_ed', 'age'))
+
+library(mlr3)
+library(mlr3learners)
+# surpress messages from mlr3 package during fitting
+lgr::get_logger("mlr3")$set_threshold("warn")
+
+learner = lrn("regr.ranger", num.trees=500, 
+              max.depth=5, min.node.size=2)
+ml_g = learner$clone()
+ml_m = learner$clone()
+
+
+set.seed(185)
+
+obj_dml_plr = DoubleML::DoubleMLPLR$new(dml_data, ml_g=ml_g, ml_m=ml_m)
+obj_dml_plr$fit()
+print(obj_dml_plr)
+```
+
+```{r plce, eval = F}
+plce_out <- with(pisa_test, PLCE::plce(
+                y = math1,
+                treat = immigrant,
+                X = as.matrix(select(pisa_test, mom_ed, dad_ed, #early_ed,
+                          female, cultural_pos, home_ed, age))))
+
+
+```
+
+```{r bart}
+set.seed(159)
+bart_out <- bartCause::bartc(
+  response = pisa_test$math1,
+  treatment = pisa_test$immigrant,
+  confounders = as.data.frame(select(pisa_test, mom_ed, dad_ed,
+                          female, early_ed, cultural_pos, home_ed, age))
+  )
+
+summary(bart_out)
+
+# sensitivity analysis:
+# Dorie et al., Statistics in Medicine, 2016
+# treatSens (CRAN) -- use BART option
+```
+
 
 \newpage
 
