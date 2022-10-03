@@ -15,10 +15,10 @@ header-includes:
   # - \let\footnote=\endnote
 #- \setlength{\headheight}{14.5pt}
 #- \setlength{\headheight}{13.6pt}
-- \usepackage{fancyhdr}
-- \pagestyle{fancy}
-- \lhead{N.I. Hoffmann}
-- \rhead{`r format(Sys.time(), '%B %e, %Y')`}
+# - \usepackage{fancyhdr}
+# - \pagestyle{fancy}
+# - \lhead{N.I. Hoffmann}
+# - \rhead{`r format(Sys.time(), '%B %e, %Y')`}
 # - \newcommand{\beginsupplement}{\setcounter{table}{0}  
 # \renewcommand{\thetable}{A\arabic{table}} \setcounter{figure}{0} 
 # \renewcommand{\thefigure}{A\arabic{figure}}}
@@ -29,8 +29,8 @@ editor_options:
 
 citeproc: no
 fontfamily: mathpazo
-# fontsize: 12pt
-geometry: margin=1in
+#fontsize: 11pt
+geometry: margin=.6in
 indent: yes
 link-citations: yes
 linkcolor: blue
@@ -41,11 +41,11 @@ bibliography: "/Users/nathan/Documents/My Library.bib"
 csl: apa.csl
 # csl: american-sociological-association.csl
 
-title: "Comparing Flexible Adjustment Methods for Causal Inference on Nested Survey Data"
-subtitle: "Statistics MS Thesis"
-author:  Nathan I. Hoffmann
-#   | Department of Sociology, UCLA
-date: "`r format(Sys.time(), '%B %e, %Y')`"
+# title: "Comparing Flexible Adjustment Methods for Causal Inference on Nested Survey Data"
+# subtitle: "Statistics MS Thesis"
+# author:  Nathan I. Hoffmann
+# #   | Department of Sociology, UCLA
+# date: "`r format(Sys.time(), '%B %e, %Y')`"
 
 
   
@@ -60,6 +60,7 @@ options("yaml.eval.expr" = TRUE)
 
 library(broom)
 library(knitr)
+library(here)
 library(haven)
 library(tidyverse)
 
@@ -151,27 +152,557 @@ pisa <- pisa %>%
   mutate(immigrant = as.numeric(immigrant))
 ```
 
-# Abstract
+<!-- # Abstract -->
 
-This thesis aims to compare different advanced adjustment methods. It will compare Imben & Rubins propensity matching, stabilized IPWs, TMLE, double machine learning (Chernozhukov et al 2018), Ratkovic (2021), and BART.
+<!-- This thesis aims to compare different advanced adjustment methods. It will compare Imben & Rubins propensity matching, stabilized IPWs, TMLE, double machine learning (Chernozhukov et al 2018), Ratkovic (2021), and BART. -->
 
 # Introduction
 
-Statistical methods for flexible covariate adjustment in causal inference have proliferated in recent years. These methods have a number of strengths over traditional regression methods: They make few functional form assumptions, easily handle large numbers of covariates, and produce interpretable treatment effect estimates. Despite their advantages, these methods remain underutilized by social scientists. Part of the barrier has been lack of familiarity with these methods, with few introductions existing. There has also been little guidance regarding which method is appropriate for particular types of data.  
+Statistical methods for flexible covariate adjustment in causal inference have proliferated in recent years. These methods have a number of strengths over traditional regression methods: They make few functional form assumptions, can accommodate large numbers of covariates, and produce easily interpretable treatment effect estimates. Many of these methods also have a "double robust" property: They estimate one model for the treatment exposure and another for the outcome, and as long as at least one is correctly specified, then the treatment effect will be estimated consistently. Despite their apparent advantages, these methods remain underutilized by social scientists. Part of the barrier has been lack of familiarity with these methods. It has also been unclear how these methods compare, or whether such methods actually perform better than traditional methods in finite samples. 
+<!-- And when researchers want to use an existing R package for these methods, the array of possible estimation methods and other options can be dizzying.   -->
 
-This paper makes advances on both of these fronts. First, it is a guide to some of the latest methods in flexible covariate adjustment, explaining the methods to a social scientist audience. Second, it compares these methods using a type of data that social scientists frequently encounter, but on which these methods have been rarely applied: nested survey data. It does this by using both simulated data where the treatment effect estimate is known, and then using real-world complex survey data from the Program for International Student Assessment (PISA).  
+This paper makes advances on these fronts. First, it is a guide to some of the latest methods in doubly robust, flexible covariate adjustment for causal inference, explaining the methods to a social scientist audience. Second, it compares these methods to more traditional statistical methods using a type of data that social scientists frequently encounter: cross-national survey data. It does this by using both simulated data where the treatment effect estimate is known, and then using complex survey data from the Program for International Student Assessment (PISA).  
 
-After presenting OLS regression as a baseline, the paper covers Targeted Maximum Likelihood Estimation, double machine learning (Chernozhukov et al 2018), PLCE (Ratkovic 2022), and BART.
+Methods covered include Targeted Maximum Likelihood Estimation [TMLE, @vanderlaan_2006_targeted], Double or Debiased Machine Learning [DML, @chernozhukov_2018_double], and Augmented Inverse Propensity Weighting [AIPW, @glynn_2010_introduction]. This paper reviews the theory behind these methods as well as simple R implementations of them on simulations and real data. These methods are compared to two methods commonly used by social scientists: ordinary least squares (OLS) regression, and matching on propensity scores estimated from logistic regression (PSM).
 
-# Overview of Techniques
 
+
+# Conceptual Overview
+
+Doubly robust methods estimate two models:  
+
+- an *outcome model*
+
+$$\mu_d(X_i) = E(Y_i \mid D_i = d, X_i)$$
+
+- and an *exposure model* (or treatment model or propensity score):
+
+$$\pi(X_i) = E(D_i \mid X_i)$$
+
+where $\mu_d(\cdot)$ is the model of control or treatment $D_i = d=\{0, 1\}$, $X_i$ is a vector of covariates for unit $i = 1, \ldots, N$ for treatment (1) and control (0), $Y_i$ is the outcome, and $\pi(\cdot)$ is the exposure model. The covariates included in $X_i$ can be different for the two models. 
+
+An estimator is called "doubly robust" if it achieves consistent estimation of the ATE (or whatever estimand the researcher is interested in) as long as *at least one* of these two models is consistently estimated. This means that the outcome model can be completely misspecified, but as long as the exposure model is correct, our estimation of the ATE will be consistent. This also means that the exposure model can be completely wrong, as along as the outcome model is correct.  
+
+
+<!-- ## Origins of Doubly Robust Methods -->
+
+<!-- According to @bang_2005_doubly, doubly robust methods have their origins in missing data models. @robins_1994_estimation and @rotnitzky_1998_semiparametric developed augmented orthogonal inverse probability-weighted (AIPW) estimators in missing data models, and @scharfstein_1999_adjusting showed that AIPW was doubly robust and extended to causal inference.   -->
+
+<!-- But @kang_2007_demystifying argue that doubly robust methods are older. They cite work by @cassel_1976_results, who proposed “generalized regression estimators” for population means from surveys where sampling weights must be estimated. Arguably, doubly robust methods go back even further than this. The form of doubly robust methods is similar to residual-on-residual regression, which dates back to @frisch_1933_partial famous FWL theorem: -->
+
+<!-- $$\beta_D = \frac{\text{Cov}(\tilde Y_i, \tilde D_i)}{\text{Var}(\tilde D_i)}$$ -->
+
+<!-- where $\tilde D_i$ is the residual part of $D_i$ after regressing it on $X_i$, and $\tilde Y_i$ is the residual part of $Y_i$ after regressing it on $X_i$. This formulation writes the regression coefficient as composed of an outcome model ($\tilde Y_i$) and exposure model ($\tilde D_i$), the two models used in doubly robust estimators.   -->
+
+<!-- There are also links between doubly robust methods and matching with regression adjustment. This work goes back to at least @rubin_1973_use, who suggested that regression adjustment in matched data produces less biased estimates that either matching (exposure adjustment) or regression (outcome adjustment) do by themselves.  -->
+
+## Assumptions
+
+Most doubly robust methods require almost all of the standard assumptions necessary formost methods that depend on selection on observables. Although some doubly robust methods relax one or two of these, the six standard assumptions are:  
+
+1. Consistency
+2. Positivity/overlap
+3. One version of treatment
+4. No interference
+5. IID observations
+6. Conditional ignorability: $\{Y_{i0}, Y_{i1}\} \perp \!\!\! \perp D_i \mid X_i$
+
+Special attention should be paid to Assumption 6: doubly robust methods will not work if we do not measure an important confounder that affects both treatment and exposure. But notably, the doubly robust methods covered in this tutorial make no functional form assumptions. Most use flexible machine learning algorithms to estimate both the outcome and exposure models, with regularization (often through cross-fitting) to avoid overfitting. 
+
+
+## A simple demonstration
+
+To demonstrate double robustness, this section presents one of the simpler doubly robust estimators: Augmented Inverse Propensity Weighting (AIPW) [@glynn_2010_introduction]. We can write this estimator as follows:
+
+$$\begin{aligned}
+\widehat{ATE} = &\frac{1}{N} \sum_{i=1}^N \left( \frac{D_i(Y_i - \hat \mu_1 (X_i))}{\hat \pi (X_i)} + \hat \mu_1(X_i) \right) 
+- \frac{1}{N} \sum_{i=1}^N \left( \frac{(1-D_i)(Y_i - \hat \mu_0 (X_i))}{1-\hat \pi(X_i)} + \hat \mu_0(X_i) \right)
+\end{aligned}$$
+
+For each individual in the sample, this estimator calculates two quantities:
+
+- The treated potential outcome
+
+$$\hat Y_{1i} = \frac{D_i(Y_i - \hat \mu_1 (X_i))}{\hat \pi (X_i)} + \hat \mu_1(X_i)$$
+
+- The control potential outcome
+
+$$\hat Y_{0i} = \frac{(1-D_i)(Y_i - \hat \mu_0 (X_i))}{1-\hat \pi(X_i)} + \hat \mu_0(X_i)$$
+
+Let's focus on the treated model:
+
+$$\hat Y_{1i} = \frac{D_i(Y_i - \hat \mu_1 (X_i))}{\hat \pi (X_i)} + \hat \mu_1(X_i)$$
+
+First, assume that the outcome model $\mu_1(X_i)$ is *correctly* specified and the exposure model $\pi(X_i)$ is *incorreclty* specified. Let's also assume (for now) that we're dealing with a treated unit, i.e. $D_i = 1$. Then
+
+$$\hat \mu_1 (X_i) = Y_i$$
+
+and hence
+
+$$\hat Y_{1i} = \frac{D_i(0)}{\hat \pi (X_i)} + \hat \mu_1(X_i) = \hat \mu_1(X_i).$$
+
+So the model relies *only* on the outcome model. The incorrectly specified exposure model completely disappears from the equation. If we're dealing with a control unit ($D_i=0$), we get the same result:
+
+$$\hat Y_{1i} = \frac{0(Y_i - \hat \mu_1 (X_i))}{\hat \pi (X_i)} + \hat \mu_1(X_i) = \hat \mu_1(X_i).$$
+
+Now, what if the *exposure* model $\pi(X_i)$ is correctly specified and the outcome model $\mu_1(X)$ is incorrect? First, we rewrite the estimator for the treated outcome:
+
+$$\begin{aligned}
+\hat Y_{1i}& = \frac{D_i(Y_i - \hat \mu_1 (X_i))}{\hat \pi (X_i)} + \hat \mu_1(X_i) \\
+&= \frac{D_iY_i}{\hat \pi (X_i)} - \frac{D_i\hat \mu_1 (X_i)}{\hat \pi (X_i)} + \frac{\hat \pi (X_i)\hat \mu_1(X_i)}{\hat \pi (X_i)} \\
+& = \frac{D_iY_i}{\hat \pi (X_i)} - \left( \frac{D_i - \hat \pi(X_i)}{\hat \pi (X_i)}\right) \hat \mu_1(X_i). &&(*)
+\end{aligned}$$
+
+Since the exposure model is correclty specified, we have $D_i = \hat \pi(X_i)$ on average, so
+
+$$E[D_i - \hat \pi(X_i)] = 0.$$
+
+This means that the second term in equation $(*)$ is 0, so
+
+$$E[\hat Y_{1i}]= E \left [ \frac{D_iY_i}{\hat \pi (X_i)}\right].$$
+
+This shows that when the exposure model is correct, then the estimator depends *only* on the exposure model. We can make similar arguments for the control model $\hat Y_{0i}$.
+
+This demonstration shows that this estimator achieves double robustness: the estimator is robust to misspecification of either the exposure or the outcome model (but not both).
+
+# Overview of Techniques  
+Each of the methods reviewed in this paper can be thought of as a collection of estimation techniques. Each involves a model for the outcome and another for the treatment exposure, but the ways these relate and are combined varies from method to method. Choice of estimation technique for these two models is left to the discretion of the user; often ensemble learning is recommended, but in practice simpler methods can also work well.  
+
+*Augmented Inverse Propensity Weighting (AIPW)*: The oldest of these modern methods, AIPW arose in the context of missing data imputation. As shown in the demonstration above, the method simply combines estimates from a model for the treatment exposure, $\pi(X)$, and a model for the outcome, $\mu(X)$. The name comes from the close similarity to inverse propensity weights (IPW), but whereas IPW only weights for propensity of treatment, AIPW "augments" these weights with an estimate of the response surface as well.  
+
+*Targeted Maximum Likelihood Estimation (TMLE)*: TMLE begins by estimating the relevant part of the data-generating distribution $P(Y)$, i.e. the conditional density $Q = P(Y \mid X)$. It next estimates the exposure model. Although any estimation method can be used for these steps, the originators of the method suggest using a "super learner," i.e. ensemble learning with cross-validation. Next, the exposure model is used to calculate a "clever covariate," which is similar to an IPW. The coefficient for this clever covariate is estimated using maximum likelihood -- whence the "MLE" in "TMLE." Finally, the estimate of $Q$ is updated in a function involving the clever covariate. This process can be iterated, but usually one iteration is enough. The estimate of the distribution $Q$ can be used to calculate the estimand of interest.  
+
+*Double or Debiased Machine Learning* (DML): The most recent of the methods reviewed here, DML is motivated by the need to handle problems with high-dimensional nuisance parameters, i.e. a large number of measured confounders. Flexible machine learning is appropriate for this task, but such methods suffer from regularization bias. DML removes this bias in a two-step procedure. First, it solves the auxiliary problem of estimating the treatment exposure model $E(D|X) =  \pi(X)$. It then uses this model to remove bias: Neyman orthogonalization allows the creation of an orthogonalized regressor, essentially partialing out the effect of covariates $X$ from treatment $D$. The debiased $D$ is then used to estimate the conditional mean of the outcome $E(Y\mid X) = \mu(X)$, which can be used to calculate the estimand of interest.  
+
+These methods have many similarities. How do the results they give compare? The next section tests the performance of each in practice.  
 
 
 # Preliminary Findings
 
-```{r test-sample}
+## Monte Carlo Simulations
+
+The structure of these simulations is based on @kang_2007_demystifying. For each unit $i = 1, \ldots, n$, let $Z = (z_{i1}, z_{i2}, z_{i3}, z_{i4})^\top$ be distributed independently as $N(0,I)$, where $I$ is the $4 \times 4$ identity matrix. Furthermore, let $d_i \in \{0,1\}$ be an indicator for treatment status with a Bernoulli distribution with probability $\pi_i$ of receiving treatment status. Values of $\pi_i$ are generated as:
+$$\pi_i = \text{expit}(z_{i1} +0.5z_{i2}-0.33z_{i3} -0.2z_{i4}),$$
+where $\text{expit}(\cdot) = \exp(\cdot)/(1 + \exp(\cdot)).$ These are then used as the probability of treatment assignment in a series of Bernoulli draws for $d_i$. Outcomes $y_i$ are generated as
+$$y_i = 500 + 50d_i + 30z_{i1} -35z_{i2} - 60z_{i3} + 50z_{i4} + \epsilon_i,$$
+where $\epsilon_i \sim N(0,10)$. Now assume that the researcher cannot measure the $z_{ij}$'s. Instead we observe $X = (x_{i1}, x_{i2}, x_{i3}, x_{i4})^\top$ :
+$$\begin{aligned}
+x_{i1} &= \exp(z_{i1}/2) \\
+x_{i2} &= z_2 / (1+\exp(z_{i1})) + 10 \\
+x_{i3} &= (z_{i1} z_{i3} /25 + 0.6)^3 \\
+x_{i4} &= (z_2 + z_4 + 20)^2 \\
+\end{aligned}$$
+
+For these preliminary results, datasets of 200 observations are generated 100 times. For each estimation method, three specifications are used:  
+
+- "correct": the model is fitted to the true data-generating variables, $Z$
+- "incorrect": the model is fitted to the transformed variables $X$
+- "ovb": the model is fitted to $(x_2, x_3, x_4)^\top$ ($x_1$ is omitted).
+
+Results are shown in Table \@ref(tab:sim-results). Estimation methods include ordinary least squares regression ("OLS"),  propensity-score matching with scores estimated from logistic regression using the `MatchIt` package ("PSM"), the augmented inverse propensity weighted estimator with generalized additive models using the `CausalGAM` package (AIPW), targeted maximum likelihood estimation using the `tmle` package (TMLE), and double/debiased machine learning with random forests with the `DoubleML` and `mlr3` packages.  
+
+Surprisingly, the double robust methods do not necessarily perform better. All methods perform well when the true data-generating variables are provided. When transformed variables are provided instead, bias, RMSE, and MAE rise for all of the estimation methods, even those that use flexible methods to model the response and treatment assignment surfaces. DML performs relatively well but RMSE and MAE still rise somewhat. When a variable is omitted, all of the methods perform poorly.  
 
 
+
+
+
+```{r sim}
+expit <- function(x){exp(x) / (1+exp(x))}
+
+sim_n <- function(n, mu = c(0, 0, 0, 0), Sigma = diag(c(1,1,1,1))){
+  z <- MASS::mvrnorm(n, mu, Sigma)
+  z1 <- z[,1]
+  z2 <- z[,2]
+  z3 <- z[,3]
+  z4 <- z[,4]
+  epsilon <- rnorm(n, 0, 10)
+  
+  pi <- expit(z1 + 0.5*z2 -.33*z3 - .2*z4)
+  d <- rbinom(n, 1, pi)
+  
+  y <- 475 + 50*d + 30*z1 -35*z2 - 60*z3 + 50*z4 + epsilon
+  
+  x1 <- exp(z1/2)
+  x2 <- z2 / (1+exp(z1)) + 10
+  x3 <- (z1 * z3 / 25 + 0.6)^3
+  x4 <- (z2 * z4 + 20)^2
+  return(data.frame(
+    z1 = z1,
+    z2 = z2,
+    z3 = z3,
+    z4 = z4,
+    pi = pi,
+    d = d,
+    y = y,
+    x1 = x1,
+    x2 = x2, 
+    x3 = x3,
+    x4 = x4
+  ))
+}
+
+set.seed(1858)
+sim_200 <- replicate(100, sim_n(200), simplify = F)
+sim_1000 <- replicate(100, sim_n(1000), simplify = F)
+sim_10000 <- replicate(100, sim_n(10000), simplify = F)
+```
+
+
+```{r lm-sim, eval = F}
+lm_sim <- function(dat){
+  n <- length(dat)
+  lm_list_true <- list()
+  lm_list_false <- list()
+  lm_list_ovb <- list()
+  for(i in 1:n){
+    lm_out_true <- lm(y ~ d + z1 + z2 + z3 + z4, dat[[i]])
+    lm_list_true[[i]] <- lm_out_true$coefficients[['d']]
+    
+    lm_out_false <- lm(y ~ d + x1 + x2 + x3 + x4, dat[[i]])
+    lm_list_false[[i]] <- lm_out_false$coefficients[['d']]
+    
+    lm_out_ovb <- lm(y ~ d + x2 + x3 + x4, dat[[i]])
+    lm_list_ovb[[i]] <- lm_out_ovb$coefficients[['d']]
+  }
+  
+  return(list(
+    n = nrow(dat[[i]]),
+    correct = unlist(lm_list_true),
+    incorrect = unlist(lm_list_false),
+    ovb = unlist(lm_list_ovb)))
+}
+
+perform <- function(est_list, label){
+  perform_list <- list()
+  
+  for(i in 1:(length(est_list)-1)){
+    est <- unlist(est_list[[i+1]])
+    bias <- mean(est-50)
+    percent_bias <- 100 * bias / sd(est)
+    rmse <- sqrt(mean((est - 50)^2))
+    mae <- median(abs(est - 50))
+    
+    perform_list[[i]] <- data.frame(label = label, n = est_list[['n']], 
+                                    model = names(est_list)[i+1], 
+                                    bias, percent_bias, rmse, mae)
+  }
+  return(bind_rows(perform_list))
+}
+
+lm_sim_200 <- lm_sim(sim_200) 
+# lm_sim_1000 <- lm_sim(sim_1000) 
+# lm_sim_10000 <- lm_sim(sim_10000) 
+
+lm_df <- bind_rows(
+  perform(lm_sim_200, 'OLS'),
+  )
+
+write_csv(lm_df, here('files', 'lm_df.csv'))
+```
+
+
+```{r psm-sim, eval = F}
+psm_sim <- function(dat){
+  n <- length(dat)
+  psm_list_true <- list()
+  psm_list_false <- list()
+  lm_list_ovb <- list()
+  for(i in 1:n){
+    match_true <- MatchIt::matchit(d ~ z1 + z2 + z3 + z4,
+                           data = dat[[i]],
+                           method = 'nearest',
+                           distance = 'glm') 
+    
+    psm_out_true <- lm(y ~ d + z1 + z2 + z3 + z4, 
+                       MatchIt::match.data(match_true), 
+                       weights = weights)
+    
+    match_false <- MatchIt::matchit(d ~ x1 + x2 + x3 + x4,
+                           data = dat[[i]],
+                           method = 'nearest',
+                           distance = 'glm') 
+    
+    psm_out_false <- lm(y ~ d + x1 + x2 + x3 + x4, 
+                       MatchIt::match.data(match_false), 
+                       weights = weights)
+    
+    match_ovb <- MatchIt::matchit(d ~ x2 + x3 + x4,
+                           data = dat[[i]],
+                           method = 'nearest',
+                           distance = 'glm') 
+    
+    psm_out_ovb <- lm(y ~ d + x2 + x3 + x4, 
+                       MatchIt::match.data(match_false), 
+                       weights = weights)
+    
+    psm_list_true[[i]] <- psm_out_true$coefficients[['d']]
+    psm_list_false[[i]] <- psm_out_false$coefficients[['d']]
+    psm_list_ovb[[i]] <- psm_out_ovb$coefficients[['d']]
+  }
+  
+  return(list(n = nrow(dat[[i]]),
+              correct = unlist(psm_list_true),
+              incorrect = unlist(psm_list_false),
+              ovb = unlist(psm_list_ovb)))
+}
+
+psm_sim_200 <- psm_sim(sim_200) 
+# psm_sim_1000 <- psm_sim(sim_1000) 
+# psm_sim_10000 <- psm_sim(sim_10000) 
+
+psm_df <- bind_rows(
+  perform(psm_sim_200, 'PSM'),
+  )
+
+write_csv(psm_df, here('files', 'psm_df.csv'))
+```
+
+```{r aipw-sim, eval = F}
+aipw_sim <- function(dat, seed = 185){
+  library(gam)
+  
+  set.seed(seed)
+  n <- length(dat)
+  aipw_list_true <- list()
+  aipw_list_false <- list()
+  aipw_list_ovb <- list()
+  
+  for(i in 1:n){
+    
+    print(i)
+    
+    correct <- CausalGAM::estimate.ATE(
+        pscore.formula = d ~ s(z1) + s(z2) + s(z3) + s(z4),
+        pscore.family = binomial,
+        outcome.formula.t = y ~ s(z1) + s(z2) + s(z3) + s(z4),
+        outcome.formula.c = y ~ s(z1) + s(z2) + s(z3) + s(z4),
+        outcome.family = gaussian,
+        treatment.var = 'd',
+        data=dat[[i]],
+        divby0.action="t",
+        divby0.tol=0.001,
+        var.gam.plot=FALSE,
+        nboot=50)
+    
+    incorrect <- CausalGAM::estimate.ATE(
+        pscore.formula = d ~ s(x1) + s(x2) + s(x3) + s(x4),
+        pscore.family = binomial,
+        outcome.formula.t = y ~ s(x1) + s(x2) + s(x3) + s(x4),
+        outcome.formula.c = y ~ s(x1) + s(x2) + s(x3) + s(x4),
+        outcome.family = gaussian,
+        treatment.var = 'd',
+        data=dat[[i]],
+        divby0.action="t",
+        divby0.tol=0.001,
+        var.gam.plot=FALSE,
+        nboot=50)
+    
+    ovb <- CausalGAM::estimate.ATE(
+        pscore.formula = d ~ s(x2) + s(x3) + s(x4),
+        pscore.family = binomial,
+        outcome.formula.t = y ~ s(x2) + s(x3) + s(x4),
+        outcome.formula.c = y ~ s(x2) + s(x3) + s(x4),
+        outcome.family = gaussian,
+        treatment.var = 'd',
+        data=dat[[i]],
+        divby0.action="t",
+        divby0.tol=0.001,
+        var.gam.plot=FALSE,
+        nboot=50)
+    
+    aipw_list_true[[i]] <- correct$ATE.AIPW.hat
+    aipw_list_false[[i]] <- incorrect$ATE.AIPW.hat
+    aipw_list_ovb[[i]] <- ovb$ATE.AIPW.hat
+  }
+  
+  return(list(n = nrow(dat[[i]]),
+              correct = unlist(aipw_list_true),
+              incorrect = unlist(aipw_list_false),
+              ovb = unlist(aipw_list_ovb)))
+}
+
+aipw_out <- aipw_sim(sim_200)
+
+aipw_df <- perform(aipw_out, 'AIPW')
+
+write_csv(aipw_df,  here('files', 'aipw_df.csv'))
+
+```
+
+
+
+```{r tmle-sim, eval = F}
+
+tmle_sim <- function(dat){
+  n <- length(dat)
+  
+  tmle_list_true_true <- list()
+  tmle_list_false_true <- list()
+  tmle_list_true_false <- list()
+  tmle_list_false_false <- list()
+  tmle_list_ovb_ovb <- list()
+  
+  for(i in 1:n){
+    
+    print(i)
+    
+    tmle_false_false <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(z1, z2, z3, z4, x1, x2, x3, x4),
+        Qform = Y ~ A + x1 + x2 + x3 + x4,
+        gform = A ~ x1 + x2 + x3 + x4))
+    
+    tmle_false_true <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(z1, z2, z3, z4, x1, x2, x3, x4),
+        Qform = Y ~ A + x1 + x2 + x3 + x4,
+        gform = A ~ z1 + z2 + z3 + z4))
+    
+    tmle_true_false <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(z1, z2, z3, z4, x1, x2, x3, x4),
+        Qform = Y ~ A + z1 + z2 + z3 + z4,
+        gform = A ~ x1 + x2 + x3 + x4))
+    
+    tmle_true_true <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(z1, z2, z3, z4, x1, x2, x3, x4),
+        Qform = Y ~ A + z1 + z2 + z3 + z4,
+        gform = A ~ z1 + z2 + z3 + z4))
+    
+    tmle_ovb_ovb <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(x2, x3, x4),
+        Qform = Y ~ A + x2 + x3 + x4,
+        gform = A ~ x2 + x3 + x4))
+    
+    tmle_list_true_true[[i]] <- tmle_true_true$estimates$ATE$psi
+    tmle_list_true_false[[i]] <- tmle_true_false$estimates$ATE$psi
+    tmle_list_false_true[[i]] <- tmle_false_true$estimates$ATE$psi
+    tmle_list_false_false[[i]] <- tmle_false_false$estimates$ATE$psi
+    tmle_list_ovb_ovb[[i]] <- tmle_ovb_ovb$estimates$ATE$psi
+  }
+  
+  return(list(n = nrow(dat[[i]]),
+              correct_correct = unlist(tmle_list_true_true),
+              correct_incorrect = unlist(tmle_list_true_false),
+              incorrect_correct = unlist(tmle_list_false_true),
+              incorrect_incorrect = unlist(tmle_list_false_false),
+              ovb = unlist(tmle_list_ovb_ovb))
+         )
+}
+
+
+tmle_out <- tmle_sim(sim_200)
+
+tmle_df <- perform(tmle_out, 'TMLE')
+
+write_csv(tmle_df, here('files', 'tmle_df.csv'))
+```
+
+```{r dml-sim, eval = F}
+dml_sim <- function(dat, seed = 185){
+  library(mlr3)
+  library(mlr3learners)
+  
+  set.seed(seed)
+  
+  n <- length(dat)
+  
+  correct_list <- list()
+  incorrect_list <- list()
+  ovb_list <- list()
+  
+  for(i in 1:n){
+    print(i)
+    
+    lgr::get_logger("mlr3")$set_threshold("warn")
+    
+    learner = lrn("regr.ranger", num.trees=500, 
+                  max.depth=5, min.node.size=2)
+    ml_l = learner$clone()
+    ml_m = learner$clone()
+    
+    
+    correct = DoubleML::DoubleMLPLR$new(
+      DoubleML::DoubleMLData$new(dat[[i]],
+                                 y_col = 'y',
+                                 d_cols = 'd',
+                                 x_cols = c('z1', 'z2', 'z3', 'z4')), 
+      ml_l=ml_l, ml_m=ml_m)
+    correct$fit()
+    correct_list[[i]] <- correct$all_coef[[1,1]]
+    
+    incorrect = DoubleML::DoubleMLPLR$new(
+      DoubleML::DoubleMLData$new(dat[[i]],
+                                 y_col = 'y',
+                                 d_cols = 'd',
+                                 x_cols = c('x1', 'x2', 'x3', 'x4')), 
+      ml_l=ml_l, ml_m=ml_m)
+    incorrect$fit()
+    incorrect_list[[i]] <- incorrect$all_coef[[1,1]]
+    
+    ovb = DoubleML::DoubleMLPLR$new(
+      DoubleML::DoubleMLData$new(dat[[i]],
+                                 y_col = 'y',
+                                 d_cols = 'd',
+                                 x_cols = c('x2', 'x3', 'x4')), 
+      ml_l=ml_l, ml_m=ml_m)
+    ovb$fit()
+    ovb_list[[i]] <- ovb$all_coef[[1,1]]
+    
+  }
+  return(list(n = nrow(dat[[i]]),
+              correct = unlist(correct_list),
+              incorrect = unlist(incorrect_list),
+              ovb = unlist(ovb_list))
+         )
+}
+
+dml_out <- dml_sim(sim_200)
+
+dml_df <- perform(dml_out, 'DML')
+
+write_csv(dml_df, here('files', 'dml_df.csv'))
+```
+
+
+```{r sim-results}
+bind_rows(
+  read_csv(here('files', 'lm_df.csv')),
+  read_csv(here('files', 'psm_df.csv')),
+  read_csv(here('files', 'aipw_df.csv')),
+  read_csv(here('files', 'tmle_df.csv')) %>%
+    filter(model %in% c('correct_correct', 'incorrect_incorrect', 'ovb')) %>%
+    mutate(model = c('correct', 'incorrect', 'ovb')),
+  read_csv(here('files', 'dml_df.csv'))
+  ) %>%
+  kableExtra::kable(booktabs = T, 
+                    linesep = '',
+                    caption = 'Results of Monte Carlo simulations over 100 replications. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, and mae is median absolute error.')
+```
+
+
+
+
+
+```{r test-sample, eval = F}
 set.seed(185)
 pisa_test <- bind_rows(
   pisa %>%
@@ -250,7 +781,7 @@ plce_out <- with(pisa_test, PLCE::plce(
 
 ```
 
-```{r bart}
+```{r bart, eval = F}
 set.seed(159)
 bart_out <- bartCause::bartc(
   response = pisa_test$math1,
@@ -266,7 +797,9 @@ summary(bart_out)
 # treatSens (CRAN) -- use BART option
 ```
 
+# Next Steps
+The Monte Carlo simulations presented here use small sample sizes and few variables, while double robust methods are perhaps most advantageous for large, high-dimensional samples. In the final paper, the simulations here will be supplemented samples of 1,000 and 10,000, and all will be replicated 1,000 times. Data sets with many covariates will also be simulated. The final paper will also test these methods on cross-national PISA test score data and provide R code to implement these methods.
 
-\newpage
+
 
 # References
