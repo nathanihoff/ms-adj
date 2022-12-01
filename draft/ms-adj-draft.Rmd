@@ -9,7 +9,7 @@ output:
     latex_engine: xelatex
 always_allow_html: true
 header-includes:
-  #- \usepackage{setspace}\doublespace
+  - \usepackage{setspace}\doublespace
   # - \usepackage[nolists, fighead, tabhead]{endfloat}
   # - \usepackage{endnotes}
   # - \let\footnote=\endnote
@@ -30,7 +30,7 @@ editor_options:
 citeproc: no
 fontfamily: mathpazo
 #fontsize: 11pt
-geometry: margin=.6in
+# geometry: margin=.6in
 indent: yes
 link-citations: yes
 linkcolor: blue
@@ -41,17 +41,15 @@ bibliography: "/Users/nathan/Documents/My Library.bib"
 csl: apa.csl
 # csl: american-sociological-association.csl
 
-# title: "Comparing Flexible Adjustment Methods for Causal Inference on Nested Survey Data"
-# subtitle: "Statistics MS Thesis"
-# author:  Nathan I. Hoffmann
-# #   | Department of Sociology, UCLA
-# date: "`r format(Sys.time(), '%B %e, %Y')`"
+title: "Demystifying Double Robust, Flexible Adjustment Methods for Causal Inference"
+#subtitle: "PAA 2023"
+author:  Nathan I. Hoffmann
+#   | Department of Sociology, UCLA
+date: "`r format(Sys.time(), '%B %e, %Y')`"
 
+abstract: "Double robust methods for flexible covariate adjustment in causal inference have proliferated in recent years. Despite their apparent advantages, these methods remain underutilized by social scientists. It is also unclear whether these methods actually outperform more traditional methods in finite samples. This paper has two aims: it is a guide to some of the latest methods in doubly robust, flexible covariate adjustment for causal inference, and it compares these methods to more traditional statistical methods. It does this by using both simulated data where the treatment effect estimate is known, and then using complex survey data from the Program for International Student Assessment (PISA). Methods covered include Targeted Maximum Likelihood Estimation, Double/Debiased Machine Learning, and Augmented Inverse Propensity Weighting. Although these methods are robust to either the exposure or response model being misspecified, preliminary results show that, when both models are incorrect, bias grows rapidly in small samples."
 
-  
 ---
-
-
 
 
 ```{r setup, include=FALSE}
@@ -184,17 +182,17 @@ where $\mu_d(\cdot)$ is the model of control or treatment $D_i = d=\{0, 1\}$, $X
 An estimator is called "doubly robust" if it achieves consistent estimation of the ATE (or whatever estimand the researcher is interested in) as long as *at least one* of these two models is consistently estimated. This means that the outcome model can be completely misspecified, but as long as the exposure model is correct, our estimation of the ATE will be consistent. This also means that the exposure model can be completely wrong, as along as the outcome model is correct.  
 
 
-<!-- ## Origins of Doubly Robust Methods -->
+## Origins of Doubly Robust Methods
 
-<!-- According to @bang_2005_doubly, doubly robust methods have their origins in missing data models. @robins_1994_estimation and @rotnitzky_1998_semiparametric developed augmented orthogonal inverse probability-weighted (AIPW) estimators in missing data models, and @scharfstein_1999_adjusting showed that AIPW was doubly robust and extended to causal inference.   -->
+According to @bang_2005_doubly, doubly robust methods have their origins in missing data models. @robins_1994_estimation and @rotnitzky_1998_semiparametric developed augmented orthogonal inverse probability-weighted (AIPW) estimators in missing data models, and @scharfstein_1999_adjusting showed that AIPW was doubly robust and extended to causal inference.
 
-<!-- But @kang_2007_demystifying argue that doubly robust methods are older. They cite work by @cassel_1976_results, who proposed “generalized regression estimators” for population means from surveys where sampling weights must be estimated. Arguably, doubly robust methods go back even further than this. The form of doubly robust methods is similar to residual-on-residual regression, which dates back to @frisch_1933_partial famous FWL theorem: -->
+But @kang_2007_demystifying argue that doubly robust methods are older. They cite work by @cassel_1976_results, who proposed “generalized regression estimators” for population means from surveys where sampling weights must be estimated. Arguably, doubly robust methods go back even further than this. The form of doubly robust methods is similar to residual-on-residual regression, which dates back to @frisch_1933_partial famous FWL theorem:
 
-<!-- $$\beta_D = \frac{\text{Cov}(\tilde Y_i, \tilde D_i)}{\text{Var}(\tilde D_i)}$$ -->
+$$\beta_D = \frac{\text{Cov}(\tilde Y_i, \tilde D_i)}{\text{Var}(\tilde D_i)}$$
 
-<!-- where $\tilde D_i$ is the residual part of $D_i$ after regressing it on $X_i$, and $\tilde Y_i$ is the residual part of $Y_i$ after regressing it on $X_i$. This formulation writes the regression coefficient as composed of an outcome model ($\tilde Y_i$) and exposure model ($\tilde D_i$), the two models used in doubly robust estimators.   -->
+where $\tilde D_i$ is the residual part of $D_i$ after regressing it on $X_i$, and $\tilde Y_i$ is the residual part of $Y_i$ after regressing it on $X_i$. This formulation writes the regression coefficient as composed of an outcome model ($\tilde Y_i$) and exposure model ($\tilde D_i$), the two models used in doubly robust estimators.
 
-<!-- There are also links between doubly robust methods and matching with regression adjustment. This work goes back to at least @rubin_1973_use, who suggested that regression adjustment in matched data produces less biased estimates that either matching (exposure adjustment) or regression (outcome adjustment) do by themselves.  -->
+There are also links between doubly robust methods and matching with regression adjustment. This work goes back to at least @rubin_1973_use, who suggested that regression adjustment in matched data produces less biased estimates that either matching (exposure adjustment) or regression (outcome adjustment) do by themselves.
 
 ## Assumptions
 
@@ -276,10 +274,14 @@ Each of the methods reviewed in this paper can be thought of as a collection of 
 
 These methods have many similarities. How do the results they give compare? The next section tests the performance of each in practice.  
 
+# Methods  
 
-# Preliminary Findings
+For the comparisons in the next section, estimation methods include ordinary least squares regression ("OLS"),  propensity-score matching with scores estimated from logistic regression using the `MatchIt` package ("PSM"), the augmented inverse propensity weighted estimator with generalized additive models using the `CausalGAM` package (AIPW), targeted maximum likelihood estimation using the `tmle` package (TMLE) with the default Superlearner that relies on the `SL.glm`,` SL.step`, and `GL.glm.interaction` functions, and double/debiased machine learning with random forests with the `DoubleML` and `mlr3` packages.  
 
-## Monte Carlo Simulations
+
+# Results
+
+## Simulation based on Kang & Schafer (2007)
 
 The structure of these simulations is based on @kang_2007_demystifying. For each unit $i = 1, \ldots, n$, let $Z = (z_{i1}, z_{i2}, z_{i3}, z_{i4})^\top$ be distributed independently as $N(0,I)$, where $I$ is the $4 \times 4$ identity matrix. Furthermore, let $d_i \in \{0,1\}$ be an indicator for treatment status with a Bernoulli distribution with probability $\pi_i$ of receiving treatment status. Values of $\pi_i$ are generated as:
 $$\pi_i = \text{expit}(z_{i1} +0.5z_{i2}-0.33z_{i3} -0.2z_{i4}),$$
@@ -293,15 +295,7 @@ x_{i3} &= (z_{i1} z_{i3} /25 + 0.6)^3 \\
 x_{i4} &= (z_2 + z_4 + 20)^2 \\
 \end{aligned}$$
 
-For these preliminary results, datasets of 200 observations are generated 100 times. For each estimation method, three specifications are used:  
 
-- "correct": the model is fitted to the true data-generating variables, $Z$
-- "incorrect": the model is fitted to the transformed variables $X$
-- "ovb": the model is fitted to $(x_2, x_3, x_4)^\top$ ($x_1$ is omitted).
-
-Results are shown in Table \@ref(tab:sim-results). Estimation methods include ordinary least squares regression ("OLS"),  propensity-score matching with scores estimated from logistic regression using the `MatchIt` package ("PSM"), the augmented inverse propensity weighted estimator with generalized additive models using the `CausalGAM` package (AIPW), targeted maximum likelihood estimation using the `tmle` package (TMLE), and double/debiased machine learning with random forests with the `DoubleML` and `mlr3` packages.  
-
-Surprisingly, the double robust methods do not necessarily perform better. All methods perform well when the true data-generating variables are provided. When transformed variables are provided instead, bias, RMSE, and MAE rise for all of the estimation methods, even those that use flexible methods to model the response and treatment assignment surfaces. DML performs relatively well but RMSE and MAE still rise somewhat. When a variable is omitted, all of the methods perform poorly.  
 
 
 
@@ -483,7 +477,7 @@ aipw_sim <- function(dat, seed = 185){
         divby0.action="t",
         divby0.tol=0.001,
         var.gam.plot=FALSE,
-        nboot=50)
+        nboot = 0)
     
     incorrect <- CausalGAM::estimate.ATE(
         pscore.formula = d ~ s(x1) + s(x2) + s(x3) + s(x4),
@@ -496,7 +490,7 @@ aipw_sim <- function(dat, seed = 185){
         divby0.action="t",
         divby0.tol=0.001,
         var.gam.plot=FALSE,
-        nboot=50)
+        nboot = 0)
     
     ovb <- CausalGAM::estimate.ATE(
         pscore.formula = d ~ s(x2) + s(x3) + s(x4),
@@ -509,7 +503,7 @@ aipw_sim <- function(dat, seed = 185){
         divby0.action="t",
         divby0.tol=0.001,
         var.gam.plot=FALSE,
-        nboot=50)
+        nboot = 0)
     
     aipw_list_true[[i]] <- correct$ATE.AIPW.hat
     aipw_list_false[[i]] <- incorrect$ATE.AIPW.hat
@@ -698,11 +692,409 @@ bind_rows(
                     caption = 'Results of Monte Carlo simulations over 100 replications. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, and mae is median absolute error.')
 ```
 
+For these preliminary results, datasets of 200 observations are generated 100 times. For each estimation method, three specifications are used:  
+
+- "correct": the model is fitted to the true data-generating variables, $Z$
+- "incorrect": the model is fitted to the transformed variables $X$
+- "ovb": the model is fitted to $(x_2, x_3, x_4)^\top$; i.e., $x_1$ is omitted
+
+Results are shown in Table \@ref(tab:sim-results). Surprisingly, the double robust methods do not necessarily perform better. All methods perform well when the true data-generating variables are provided. When transformed variables are provided instead, bias, RMSE, and MAE rise for all of the estimation methods, even those that use flexible methods to model the response and treatment assignment surfaces. DML performs relatively well but RMSE and MAE still rise somewhat. When a variable is omitted, all of the methods perform poorly.  
+
+## Simluation with Dorie et al. (2019) Data
+
+In 2016, the Atlantic Causal Inference Conference hosted a competition for causal inference methods that adjust on observables. @dorie_2019_automated published the results of this competition, along with the data used in the competition. Below, I test double robust methods on the 20 data sets used for the "do-it-yourself" part of the competition. The data represent a hypothetical twins study investigating the impact of birth weight on IQ. The data have 4802 observations and 52 covariates. The authors of the study specify a different data generating process for the potential outcomes in each data set. In all cases, ignorability holds, but the authors vary the following:  
+
+- degree of nonlinearity
+- percentage of treated
+- overlap for the treatment group
+- alignment (correspondence between the assignment mechanism and the response surface)
+- treatment effect heterogeneity
+- overall magnitude of the treatment effect  
+
+The 20 data sets used here cover a range of these attributes; see the supplemental material from @dorie_2019_automated for details. For these preliminary results, I used 5 simulations of each data set, resulting in 100 data sets. I then calculated the same statistics as in Table \@ref(tab:sim-results): percent bias, root-mean squared error, and median average error. I also include the number of data sets for which the method failed and the average computation time for each data set.
 
 
 
+```{r dorie-sim, eval = F}
+set.seed(185)
+sim_list <- list()
+for(i in 1:20){ # up to 77
+  #sim_list_nest <- list()
+  for(j in 1:5){ # up to 100
+    print(paste0(i,',',j))
+    sim_list[[paste0(i,',',j)]] <- aciccomp2016::dgp_2016(aciccomp2016::input_2016, i, j, 
+                                                          extraInfo = T)
+  }
+  #sim_list[[i]] <- sim_list_nest
+}
 
-```{r test-sample, eval = F}
+perform <- function(est_df, label){
+  est_df %>%
+    summarize(bias = mean(d - truth),
+              percent_bias = bias/sd(d),
+              rmse = sqrt(mean(d - truth)^2),
+              mae = median(abs(d - truth))) %>%
+    mutate(label = label) %>%
+    select(label, everything()) %>%
+    return()
+}
+```
+
+
+```{r lm-sim2, eval = F}
+lm_sim <- function(dat){
+  start_time <- Sys.time()
+  n <- length(dat)
+  lm_list <- list()
+  for(i in 1:n){
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x)
+    
+    
+    tryCatch({
+      lm_out <- lm(y ~ d + ., sim_dat)
+      lm_list[[i]] <- data.frame(d = lm_out$coefficients[['d']],
+                                 truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+      }, error=function(e){
+        cat("ERROR :",conditionMessage(e), "\n")
+        })
+    
+  }
+  
+  fail_count <- sum(sapply(lm_list, function(x) is.null(x)))
+  # in case last few are errors
+  fail_count <- ifelse(length(lm_list) == n, fail_count, fail_count + (n - length(lm_list)))
+
+  return(list(
+    est_df = bind_rows(lm_list),
+    fail_count = fail_count,
+    comp_time = as.numeric(Sys.time() - start_time)/(n-fail_count))
+    )
+}
+
+lm_sim_out <- lm_sim(sim_list) 
+
+
+lm_df <- perform(lm_sim_out$est_df, 'OLS') %>%
+  mutate(fail_count = lm_sim_out$fail_count,
+         comp_time = lm_sim_out$comp_time)
+
+
+write_csv(lm_df, here('files', 'lm_df2.csv'))
+```
+
+
+```{r psm-sim2, eval = F}
+psm_sim <- function(dat){
+  start_time <- Sys.time()
+  n <- length(dat)
+  psm_list <- list()
+  for(i in 1:n){
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x)
+    
+    form <- as.formula(paste0('d ~ ', paste(names(sim_dat[3:60]), collapse = '+')))
+    match_out <- MatchIt::matchit(form,
+                           data = sim_dat,
+                           method = 'nearest',
+                           distance = 'glm') 
+    
+    # match_data <- MatchIt::match.data(match_out) 
+    # apply(match_data, 1, unique)
+    form2 <- as.formula(paste0('y ~ d + ', paste(names(sim_dat[3:60]), collapse = '+')))
+    
+  tryCatch({
+    psm_out <- lm(form2, 
+                  MatchIt::match.data(match_out), 
+                  weights = weights)
+    psm_list[[i]] <- data.frame(d = psm_out$coefficients[['d']],
+                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+        
+  }, error=function(e){
+    cat("ERROR :",conditionMessage(e), "\n")
+    })
+    
+  }
+  
+  fail_count <- sum(sapply(psm_list, function(x) is.null(x)))
+  # in case last few are errors
+  fail_count <- ifelse(length(psm_list) == n, fail_count, fail_count + (n - length(psm_list)))
+  
+  end_time <- Sys.time()
+  
+  return(list(
+    est_df = bind_rows(psm_list),
+    fail_count = fail_count,
+    comp_time = as.numeric(end_time - start_time)/(n-fail_count))
+  )
+}
+
+psm_sim_out <- psm_sim(sim_list) 
+# psm_sim_1000 <- psm_sim(sim_1000) 
+# psm_sim_10000 <- psm_sim(sim_10000) 
+
+psm_df <- perform(psm_sim_out$est_df, 'PSM') %>%
+  mutate(fail_count = psm_sim_out$fail_count,
+         comp_time = psm_sim_out$comp_time)
+
+write_csv(psm_df, here('files', 'psm_df2.csv'))
+```
+
+```{r aipw-sim2, eval = F}
+aipw_sim <- function(dat, seed = 185){
+  library(gam)
+  
+  start_time <- Sys.time()
+  
+  set.seed(seed)
+  n <- length(dat)
+  aipw_list <- list()
+  # fail_count <- 0
+  
+  for(i in 1:n){
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x) %>%
+      mutate(across(where(is.factor), as.character))
+    
+    # Need to filter out cases without overlap (CausalGAM does not)
+    treat_levels <- sim_dat %>% 
+      filter(d == 1) %>%
+      select(where(is.character)) %>%
+      sapply(unique)
+    control_levels <- sim_dat %>% 
+      filter(d == 0) %>%
+      select(where(is.character)) %>%
+      sapply(unique)
+    
+    for(j in 1:length(treat_levels)){
+      if(!all(c(treat_levels[[j]] %in% control_levels[[j]]),control_levels[[j]] %in% treat_levels[[j]])){
+        # print(names(treat_levels)[j])
+        # print(treat_levels[[j]])
+        # print(control_levels[[j]])
+
+        var_name <- names(treat_levels)[j]
+
+        sim_dat <- sim_dat %>%
+          filter(!!sym(var_name) %in% c(treat_levels[[j]]) &
+                   !!sym(var_name) %in% c(control_levels[[j]]))
+        
+        # fail_count <- fail_count + 1
+      }
+    }
+    
+
+    
+    class_vec <- sapply(sim_dat, function(x) class(x))
+    cont_names <- names(sim_dat[, class_vec == 'numeric'])
+    cont_names <- cont_names[3:length(cont_names)]
+    not_cont_names <- names(sim_dat[, class_vec != 'numeric'])
+    
+    pscore_form <- as.formula(paste0('d ~ s(', 
+                                     paste(cont_names, collapse = ') + s('), ') +',
+                                     paste(not_cont_names, collapse = ' + ')))
+    outcome_form <- as.formula(paste0('y ~ s(', 
+                                     paste(cont_names, collapse = ') + s('), ') +',
+                                     paste(not_cont_names, collapse = ' + ')))
+    
+    
+    tryCatch({
+      aipw_out <- CausalGAM::estimate.ATE(
+      pscore.formula = pscore_form,
+      pscore.family = binomial,
+      outcome.formula.t =outcome_form,
+      outcome.formula.c = outcome_form,
+      outcome.family = gaussian,
+      treatment.var = 'd',
+      data = sim_dat,
+      divby0.action="t",
+      divby0.tol=0.001,
+      var.gam.plot=FALSE,
+      nboot=0)
+      
+      aipw_list[[i]] <- data.frame(d = aipw_out$ATE.AIPW.hat,
+                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+        
+  }, error=function(e){
+    cat("ERROR :",conditionMessage(e), "\n")
+    })
+  }
+  
+  fail_count <- sum(sapply(aipw_list, function(x) is.null(x)))
+  # in case last few are errors
+  fail_count <- ifelse(length(aipw_list) == n, fail_count, fail_count + (n - length(aipw_list)))
+  
+  
+  return(list(
+      est_df = bind_rows(aipw_list),
+      fail_count = fail_count,
+      comp_time = as.numeric(Sys.time() - start_time)/(n-fail_count))
+  )
+}
+
+aipw_out <- aipw_sim(sim_list)
+
+aipw_df <- perform(aipw_out$est_df, 'AIPW') %>%
+  mutate(fail_count = aipw_out$fail_count,
+         comp_time = aipw_out$comp_time)
+
+write_csv(aipw_df,  here('files', 'aipw_df2.csv'))
+
+```
+
+
+
+```{r tmle-sim2, eval = F}
+
+tmle_sim <- function(dat){
+  start_time <- Sys.time()
+  
+  n <- length(dat)
+  
+  tmle_list <- list()
+  
+  pscore_form <- as.formula(paste0('A ~ ', 
+                                   paste(names(dat[[1]]$x), collapse = ' + ')))
+  outcome_form <- as.formula(paste0('y ~ A +', 
+                                   paste(names(dat[[1]]$x), collapse = ' + ')))
+  
+  for(i in 1:n){
+    
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(Y = dat[[i]]$y, 
+                          A = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x) 
+    
+
+
+   tryCatch({
+
+    tmle_out <- tmle::tmle(
+                Y = sim_dat$Y,
+                A = sim_dat$A,
+                W = select(sim_dat, x_1:x_58),
+                Qform = Y ~ .,
+                gform = A ~ .)
+      
+      tmle_list[[i]] <- data.frame(d = tmle_out$estimates$ATE$psi,
+                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+        
+  }, error=function(e){
+    cat("ERROR :",conditionMessage(e), "\n")
+    })
+  }
+  
+  fail_count <- sum(sapply(tmle_list, function(x) is.null(x)))
+  # in case last few are errors
+  fail_count <- ifelse(length(tmle_list) == n, fail_count, fail_count + (n - length(tmle_list)))
+  
+ return(list(
+      est_df = bind_rows(tmle_list),
+      fail_count = fail_count,
+      comp_time = as.numeric(Sys.time() - start_time)/(n-fail_count))
+  )
+}
+
+
+tmle_out <- tmle_sim(sim_list)
+
+tmle_df <- perform(tmle_out$est_df, 'TMLE') %>%
+  mutate(fail_count = tmle_out$fail_count,
+         comp_time = tmle_out$comp_time)
+
+write_csv(tmle_df, here('files', 'tmle_df2.csv'))
+```
+
+```{r dml-sim2, eval = F}
+dml_sim <- function(dat, seed = 185){
+  library(mlr3)
+  library(mlr3learners)
+  
+  start_time <- Sys.time()
+  
+  set.seed(seed)
+  
+  n <- length(dat)
+  
+  dml_list <- list()
+  
+  for(i in 1:n){
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x) 
+    
+    lgr::get_logger("mlr3")$set_threshold("warn")
+    
+    learner = lrn("regr.ranger", num.trees=500, 
+                  max.depth=5, min.node.size=2)
+    ml_l = learner$clone()
+    ml_m = learner$clone()
+
+    tryCatch({
+      dml_out <- DoubleML::DoubleMLPLR$new(
+        DoubleML::DoubleMLData$new(sim_dat,
+                                 y_col = 'y',
+                                 d_cols = 'd',
+                                 x_cols = names(dat[[i]]$x)), 
+        ml_l=ml_l, ml_m=ml_m)
+      
+      dml_out$fit()
+      dml_list[[i]] <- data.frame(d = dml_out$all_coef[[1,1]],
+                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+      
+  }, error=function(e){
+    cat("ERROR :",conditionMessage(e), "\n")
+    })
+  }
+  
+  fail_count <- sum(sapply(dml_list, function(x) is.null(x)))
+  # in case last few are errors
+  fail_count <- ifelse(length(dml_list) == n, fail_count, fail_count + (n - length(dml_list)))
+  
+  return(list(
+      est_df = bind_rows(dml_list),
+      fail_count = fail_count,
+      comp_time = as.numeric(Sys.time() - start_time)/(n-fail_count))
+      )
+}
+
+dml_out <- dml_sim(sim_list)
+
+dml_df <- perform(dml_out$est_df, 'DML') %>%
+  mutate(fail_count = dml_out$fail_count,
+         comp_time = dml_out$comp_time)
+
+write_csv(dml_df, here('files', 'dml_df2.csv'))
+```
+
+```{r dorie-results}
+bind_rows(
+  read_csv(here('files', 'lm_df2.csv')),
+  read_csv(here('files', 'psm_df2.csv')),
+  read_csv(here('files', 'aipw_df2.csv')),
+  read_csv(here('files', 'tmle_df2.csv')),
+  read_csv(here('files', 'dml_df2.csv'))
+  ) %>%
+  select(-comp_time) %>%
+  kableExtra::kable(booktabs = T, 
+                    linesep = '',
+                    caption = 'Results of Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 5 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is average computation time measured in seconds for each dataset.')
+```
+
+Results are shown in Table \@ref(tab:dorie-results). The methods all have similar levels of bias and error, but AIPW performs better than the other methods on all measures. AIPW did fail, however, on the most data sets; the package `CausalGAM` package does not do well with lack of overlap of factor variables between treated and control groups. 
+
+
+## Tests on PISA Data
+
+
+
+```{r test-sample, eval = T}
 set.seed(185)
 pisa_test <- bind_rows(
   pisa %>%
@@ -713,8 +1105,8 @@ pisa_test <- bind_rows(
   pisa %>%
     filter(match_country == 'Albania', immigrant == F) %>%
         select(math1, immigrant, mom_ed, dad_ed,
-                          female, early_ed, cultural_pos, home_ed, age) 
-    #sample_n(200)
+                          female, early_ed, cultural_pos, home_ed, age) %>%
+    sample_n(1000)
   )
 
 # pisa_test <- pisa %>%
@@ -726,23 +1118,89 @@ pisa_test <- bind_rows(
 #  filter(match_country %in% c('Portugal', 'Germany', 'United States'))
 ```
 
-```{r tmle, eval = F}
+```{r lm-pisa, eval = F}
+lm_out_pisa <- lm(math1 ~ immigrant + mom_ed + dad_ed + 
+                          female + early_ed + cultural_pos + home_ed + age, 
+                   pisa_test) %>%
+  tidy()
+
+
+lm_df <- data.frame(method = 'OLS',
+                     ATE = pull(lm_out_pisa, estimate)[lm_out_pisa$term == 'immigrant'],
+                     se = pull(lm_out_pisa, std.error)[lm_out_pisa$term == 'immigrant'])
+```
+
+
+```{r psm-pisa, eval = F}
+match_pisa <- MatchIt::matchit(immigrant ~ mom_ed + dad_ed + 
+                          female + early_ed + cultural_pos + home_ed + age,
+                       data = pisa_test,
+                       method = 'nearest',
+                       distance = 'glm') 
+
+psm_out_pisa <- lm(math1 ~ immigrant + mom_ed + dad_ed + 
+                          female + early_ed + cultural_pos + home_ed + age, 
+                   MatchIt::match.data(match_pisa), 
+                   weights = weights)
+
+psm_df <- lmtest::coeftest(psm_out_pisa, 
+                            vcov. = sandwich::vcovCL, 
+                            cluster = ~subclass) %>%
+  tidy()
+
+psm_df <- data.frame(method = 'PSM',
+                     ATE = pull(psm_df, estimate)[psm_df$term == 'immigrant'],
+                     se = pull(psm_df, std.error)[psm_df$term == 'immigrant'])
+```
+
+```{r aipw-pisa, eval = F}
+library(gam)
+
+pisa_test_dummies <- pisa_test %>%
+  select(-early_ed) %>%
+  bind_cols(model.matrix(~ early_ed, data = pisa_test)) %>%
+  as.data.frame()
+
+aipw_pisa_out <- CausalGAM::estimate.ATE(
+        pscore.formula = immigrant ~ s(mom_ed) + s(dad_ed) + female + 
+          `early_ed0-1` + `early_ed1+` + s(cultural_pos) + s(home_ed) + s(age),
+        pscore.family = binomial,
+        outcome.formula.t = math1 ~ s(mom_ed) + s(dad_ed) + female + 
+          `early_ed0-1` + `early_ed1+` + s(cultural_pos) + s(home_ed) + s(age),
+        outcome.formula.c = math1 ~ s(mom_ed) + s(dad_ed) + female + 
+          `early_ed0-1` + `early_ed1+` + s(cultural_pos) + s(home_ed) + s(age),
+        outcome.family = gaussian,
+        treatment.var = 'immigrant',
+        data = pisa_test_dummies,
+        divby0.action="t",
+        divby0.tol=0.001,
+        var.gam.plot=FALSE,
+        nboot = 0)
+
+
+
+
+aipw_df <- data.frame(method = 'AIPW',
+                     ATE = aipw_pisa_out$ATE.AIPW.hat,
+                     se = aipw_pisa_out$ATE.AIPW.asymp.SE)
+```
+
+
+```{r tmle-pisa, eval = F}
 # Y = outcome
 # A = binary treatment
 # W = covariates
 
 tmle_out <- with(pisa_test, tmle::tmle(
                 Y = math1,
-                A = as.logical(immigrant),
+                A = immigrant,
                 W = select(pisa_test, mom_ed, dad_ed, 
                           female, early_ed, cultural_pos, home_ed, age),
                 verbose = T))
-tmle_out
 
-# pisa %>%
-#  count(match_country, immigrant) %>% View()
-#   arrange(desc(n))
-
+tmle_df <- data.frame(method = 'TMLE',
+           ATE = tmle_out$estimates$ATE$psi,
+           se = sqrt(tmle_out$estimates$ATE$var.psi))
 
 ```
 
@@ -760,15 +1218,21 @@ lgr::get_logger("mlr3")$set_threshold("warn")
 
 learner = lrn("regr.ranger", num.trees=500, 
               max.depth=5, min.node.size=2)
-ml_g = learner$clone()
+ml_l = learner$clone()
 ml_m = learner$clone()
 
 
 set.seed(185)
 
-obj_dml_plr = DoubleML::DoubleMLPLR$new(dml_data, ml_g=ml_g, ml_m=ml_m)
+obj_dml_plr = DoubleML::DoubleMLPLR$new(dml_data, ml_l=ml_l, ml_m=ml_m)
 obj_dml_plr$fit()
-print(obj_dml_plr)
+
+
+
+
+dml_df <- data.frame(method = 'DML',
+           ATE = obj_dml_plr$all_coef,
+           se = obj_dml_plr$se[['immigrant']])
 ```
 
 ```{r plce, eval = F}
@@ -797,8 +1261,32 @@ summary(bart_out)
 # treatSens (CRAN) -- use BART option
 ```
 
-# Next Steps
-The Monte Carlo simulations presented here use small sample sizes and few variables, while double robust methods are perhaps most advantageous for large, high-dimensional samples. In the final paper, the simulations here will be supplemented samples of 1,000 and 10,000, and all will be replicated 1,000 times. Data sets with many covariates will also be simulated. The final paper will also test these methods on cross-national PISA test score data and provide R code to implement these methods.
+
+
+For the comparison using real data, the analysis uses pooled 2012, 2015, and 2018 waves of the Programme for Student Assessment (PISA), which assesses 15-year-olds’ reading, math, and science skills every three years in dozens of countries worldwide. The goal is to estimate an effect of migration, so `r sum(pisa$immigrant == 1)` immigrant adolescents are compared to  `r sum(pisa$immigrant == 0)` non-migrants in their countries of origin. Outcome variables consist of reading, math, and science scores, which the OECD constructs to have a global mean of 500 and standard deviation of 100. I adjust for the pre-migration characteristics of mother's and father's education (measured in 6-category ISCED, entered as a continuous variable in regressions), cultural possessions, home educational resources, age, a categorical variable for early childhood education and care (ECEC), survey year, and two-category gender.  
+
+For these preliminary results, only one group is considered: children born in Albania. `r sum(pisa_test$immigrant == 1)` immigrant Albanians are compared to 1,000 non-immigrant Albanians. In addition, only math scores are considered. Results using different methods are presented in Table \@ref(tab:pisa-results).  
+
+Compared to the other methods, OLS regression estimates a more negative effect of migration on math scores. However, ATE estimates are fairly similar across the other estimation methods, as are standard errors.
+
+```{r pisa-results}
+# bind_rows(lm_df, psm_df, aipw_df, tmle_df, dml_df)  %>%
+#   write_csv(here('files', 'pisa_df.csv'))
+
+read_csv(here('files', 'pisa_df.csv')) %>%
+  kableExtra::kable(booktabs = T, 
+                    linesep = '',
+                    caption = 'Results of methods tested on PISA math scores for 440 immigrant and 1000 non-immigrant Albanian students. The ATE estimates the effect of migration on the math1 test score of 15-year-olds in the survey, with adjustments for parents\' education, cultural possessions, home educational resources, age, a categorical variable for early childhood education and care (ECEC), survey year, and two-category gender.')
+```
+
+
+
+# Next Steps  
+
+- simulations over more data sets
+- testing methods on larger samples of PISA data
+- R code to implement these methods
+
 
 
 
