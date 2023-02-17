@@ -87,26 +87,9 @@ ggplot <- function(...) ggplot2::ggplot(...) +
 kable <- function(...) knitr::kable(..., format.args = list(big.mark = ","))
 ```
 
-```{r, functions}
-perform <- function(est_df, label){
-  est_df %>%
-    summarize(bias = mean(d - truth),
-              percent_bias = bias/sd(d),
-              rmse = sqrt(mean(d - truth)^2),
-              mae = median(abs(d - truth)),
-              fail_count = first(fail_count),
-              comp_time = first(comp_time)) %>%
-    mutate(label = label,
-           n = nrow(est_df) + fail_count) %>%
-    select(label, everything()) %>%
-    return()
-}
-```
-
-
-```{r load, eval = F}
+```{r load}
 # data from mx0.5
-pisa <- readRDS('/Users/nathan/My Drive/1 UCLA/Dissertation/data/pisa.rds') %>%
+pisa <- readRDS('/Users/nathan/My Drive/1 UCLA/Dissertation/diss-prop/data/pisa.rds') %>%
   mutate(age = as.numeric(age))
 
 pisa <- pisa %>%
@@ -298,7 +281,424 @@ For the comparisons in the next section, estimation methods include ordinary lea
 
 # Results
 
- 
+## Simulation based on Kang & Schafer (2007)
+
+The structure of these simulations is based on @kang_2007_demystifying. For each unit $i = 1, \ldots, n$, let $Z = (z_{i1}, z_{i2}, z_{i3}, z_{i4})^\top$ be distributed independently as $N(0,I)$, where $I$ is the $4 \times 4$ identity matrix. Furthermore, let $d_i \in \{0,1\}$ be an indicator for treatment status with a Bernoulli distribution with probability $\pi_i$ of receiving treatment status. Values of $\pi_i$ are generated as:
+$$\pi_i = \text{expit}(z_{i1} +0.5z_{i2}-0.33z_{i3} -0.2z_{i4}),$$
+where $\text{expit}(\cdot) = \exp(\cdot)/(1 + \exp(\cdot)).$ These are then used as the probability of treatment assignment in a series of Bernoulli draws for $d_i$. Outcomes $y_i$ are generated as
+$$y_i = 500 + 50d_i + 30z_{i1} -35z_{i2} - 60z_{i3} + 50z_{i4} + \epsilon_i,$$
+where $\epsilon_i \sim N(0,10)$. Now assume that the researcher cannot measure the $z_{ij}$'s. Instead we observe $X = (x_{i1}, x_{i2}, x_{i3}, x_{i4})^\top$ :
+$$\begin{aligned}
+x_{i1} &= \exp(z_{i1}/2) \\
+x_{i2} &= z_2 / (1+\exp(z_{i1})) + 10 \\
+x_{i3} &= (z_{i1} z_{i3} /25 + 0.6)^3 \\
+x_{i4} &= (z_2 + z_4 + 20)^2 \\
+\end{aligned}$$
+
+
+
+
+
+
+
+```{r sim}
+expit <- function(x){exp(x) / (1+exp(x))}
+
+sim_n <- function(n, mu = c(0, 0, 0, 0), Sigma = diag(c(1,1,1,1))){
+  z <- MASS::mvrnorm(n, mu, Sigma)
+  z1 <- z[,1]
+  z2 <- z[,2]
+  z3 <- z[,3]
+  z4 <- z[,4]
+  epsilon <- rnorm(n, 0, 10)
+  
+  pi <- expit(z1 + 0.5*z2 -.33*z3 - .2*z4)
+  d <- rbinom(n, 1, pi)
+  
+  y <- 475 + 50*d + 30*z1 -35*z2 - 60*z3 + 50*z4 + epsilon
+  
+  x1 <- exp(z1/2)
+  x2 <- z2 / (1+exp(z1)) + 10
+  x3 <- (z1 * z3 / 25 + 0.6)^3
+  x4 <- (z2 * z4 + 20)^2
+  return(data.frame(
+    z1 = z1,
+    z2 = z2,
+    z3 = z3,
+    z4 = z4,
+    pi = pi,
+    d = d,
+    y = y,
+    x1 = x1,
+    x2 = x2, 
+    x3 = x3,
+    x4 = x4
+  ))
+}
+
+set.seed(1858)
+sim_200 <- replicate(100, sim_n(200), simplify = F)
+sim_1000 <- replicate(100, sim_n(1000), simplify = F)
+sim_10000 <- replicate(100, sim_n(10000), simplify = F)
+```
+
+
+```{r lm-sim, eval = F}
+lm_sim <- function(dat){
+  n <- length(dat)
+  lm_list_true <- list()
+  lm_list_false <- list()
+  lm_list_ovb <- list()
+  for(i in 1:n){
+    lm_out_true <- lm(y ~ d + z1 + z2 + z3 + z4, dat[[i]])
+    lm_list_true[[i]] <- lm_out_true$coefficients[['d']]
+    
+    lm_out_false <- lm(y ~ d + x1 + x2 + x3 + x4, dat[[i]])
+    lm_list_false[[i]] <- lm_out_false$coefficients[['d']]
+    
+    lm_out_ovb <- lm(y ~ d + x2 + x3 + x4, dat[[i]])
+    lm_list_ovb[[i]] <- lm_out_ovb$coefficients[['d']]
+  }
+  
+  return(list(
+    n = nrow(dat[[i]]),
+    correct = unlist(lm_list_true),
+    incorrect = unlist(lm_list_false),
+    ovb = unlist(lm_list_ovb)))
+}
+
+perform <- function(est_list, label){
+  perform_list <- list()
+  
+  for(i in 1:(length(est_list)-1)){
+    est <- unlist(est_list[[i+1]])
+    bias <- mean(est-50)
+    percent_bias <- 100 * bias / sd(est)
+    rmse <- sqrt(mean((est - 50)^2))
+    mae <- median(abs(est - 50))
+    
+    perform_list[[i]] <- data.frame(label = label, n = est_list[['n']], 
+                                    model = names(est_list)[i+1], 
+                                    bias, percent_bias, rmse, mae)
+  }
+  return(bind_rows(perform_list))
+}
+
+lm_sim_200 <- lm_sim(sim_200) 
+# lm_sim_1000 <- lm_sim(sim_1000) 
+# lm_sim_10000 <- lm_sim(sim_10000) 
+
+lm_df <- bind_rows(
+  perform(lm_sim_200, 'OLS'),
+  )
+
+write_csv(lm_df, here('files', 'lm_df.csv'))
+```
+
+
+```{r psm-sim, eval = F}
+psm_sim <- function(dat){
+  n <- length(dat)
+  psm_list_true <- list()
+  psm_list_false <- list()
+  lm_list_ovb <- list()
+  for(i in 1:n){
+    match_true <- MatchIt::matchit(d ~ z1 + z2 + z3 + z4,
+                           data = dat[[i]],
+                           method = 'nearest',
+                           distance = 'glm') 
+    
+    psm_out_true <- lm(y ~ d + z1 + z2 + z3 + z4, 
+                       MatchIt::match.data(match_true), 
+                       weights = weights)
+    
+    match_false <- MatchIt::matchit(d ~ x1 + x2 + x3 + x4,
+                           data = dat[[i]],
+                           method = 'nearest',
+                           distance = 'glm') 
+    
+    psm_out_false <- lm(y ~ d + x1 + x2 + x3 + x4, 
+                       MatchIt::match.data(match_false), 
+                       weights = weights)
+    
+    match_ovb <- MatchIt::matchit(d ~ x2 + x3 + x4,
+                           data = dat[[i]],
+                           method = 'nearest',
+                           distance = 'glm') 
+    
+    psm_out_ovb <- lm(y ~ d + x2 + x3 + x4, 
+                       MatchIt::match.data(match_false), 
+                       weights = weights)
+    
+    psm_list_true[[i]] <- psm_out_true$coefficients[['d']]
+    psm_list_false[[i]] <- psm_out_false$coefficients[['d']]
+    psm_list_ovb[[i]] <- psm_out_ovb$coefficients[['d']]
+  }
+  
+  return(list(n = nrow(dat[[i]]),
+              correct = unlist(psm_list_true),
+              incorrect = unlist(psm_list_false),
+              ovb = unlist(psm_list_ovb)))
+}
+
+psm_sim_200 <- psm_sim(sim_200) 
+# psm_sim_1000 <- psm_sim(sim_1000) 
+# psm_sim_10000 <- psm_sim(sim_10000) 
+
+psm_df <- bind_rows(
+  perform(psm_sim_200, 'PSM'),
+  )
+
+write_csv(psm_df, here('files', 'psm_df.csv'))
+```
+
+```{r aipw-sim, eval = F}
+aipw_sim <- function(dat, seed = 185){
+  library(gam)
+  
+  set.seed(seed)
+  n <- length(dat)
+  aipw_list_true <- list()
+  aipw_list_false <- list()
+  aipw_list_ovb <- list()
+  
+  for(i in 1:n){
+    
+    print(i)
+    
+    correct <- CausalGAM::estimate.ATE(
+        pscore.formula = d ~ s(z1) + s(z2) + s(z3) + s(z4),
+        pscore.family = binomial,
+        outcome.formula.t = y ~ s(z1) + s(z2) + s(z3) + s(z4),
+        outcome.formula.c = y ~ s(z1) + s(z2) + s(z3) + s(z4),
+        outcome.family = gaussian,
+        treatment.var = 'd',
+        data=dat[[i]],
+        divby0.action="t",
+        divby0.tol=0.001,
+        var.gam.plot=FALSE,
+        nboot = 0)
+    
+    incorrect <- CausalGAM::estimate.ATE(
+        pscore.formula = d ~ s(x1) + s(x2) + s(x3) + s(x4),
+        pscore.family = binomial,
+        outcome.formula.t = y ~ s(x1) + s(x2) + s(x3) + s(x4),
+        outcome.formula.c = y ~ s(x1) + s(x2) + s(x3) + s(x4),
+        outcome.family = gaussian,
+        treatment.var = 'd',
+        data=dat[[i]],
+        divby0.action="t",
+        divby0.tol=0.001,
+        var.gam.plot=FALSE,
+        nboot = 0)
+    
+    ovb <- CausalGAM::estimate.ATE(
+        pscore.formula = d ~ s(x2) + s(x3) + s(x4),
+        pscore.family = binomial,
+        outcome.formula.t = y ~ s(x2) + s(x3) + s(x4),
+        outcome.formula.c = y ~ s(x2) + s(x3) + s(x4),
+        outcome.family = gaussian,
+        treatment.var = 'd',
+        data=dat[[i]],
+        divby0.action="t",
+        divby0.tol=0.001,
+        var.gam.plot=FALSE,
+        nboot = 0)
+    
+    aipw_list_true[[i]] <- correct$ATE.AIPW.hat
+    aipw_list_false[[i]] <- incorrect$ATE.AIPW.hat
+    aipw_list_ovb[[i]] <- ovb$ATE.AIPW.hat
+  }
+  
+  return(list(n = nrow(dat[[i]]),
+              correct = unlist(aipw_list_true),
+              incorrect = unlist(aipw_list_false),
+              ovb = unlist(aipw_list_ovb)))
+}
+
+aipw_out <- aipw_sim(sim_200)
+
+aipw_df <- perform(aipw_out, 'AIPW')
+
+write_csv(aipw_df,  here('files', 'aipw_df.csv'))
+
+```
+
+
+
+```{r tmle-sim, eval = F}
+
+tmle_sim <- function(dat){
+  n <- length(dat)
+  
+  tmle_list_true_true <- list()
+  tmle_list_false_true <- list()
+  tmle_list_true_false <- list()
+  tmle_list_false_false <- list()
+  tmle_list_ovb_ovb <- list()
+  
+  for(i in 1:n){
+    
+    print(i)
+    
+    tmle_false_false <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(z1, z2, z3, z4, x1, x2, x3, x4),
+        Qform = Y ~ A + x1 + x2 + x3 + x4,
+        gform = A ~ x1 + x2 + x3 + x4))
+    
+    tmle_false_true <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(z1, z2, z3, z4, x1, x2, x3, x4),
+        Qform = Y ~ A + x1 + x2 + x3 + x4,
+        gform = A ~ z1 + z2 + z3 + z4))
+    
+    tmle_true_false <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(z1, z2, z3, z4, x1, x2, x3, x4),
+        Qform = Y ~ A + z1 + z2 + z3 + z4,
+        gform = A ~ x1 + x2 + x3 + x4))
+    
+    tmle_true_true <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(z1, z2, z3, z4, x1, x2, x3, x4),
+        Qform = Y ~ A + z1 + z2 + z3 + z4,
+        gform = A ~ z1 + z2 + z3 + z4))
+    
+    tmle_ovb_ovb <- with(
+      dat[[i]],
+      tmle::tmle(
+        Y = y,
+        A = d,
+        W = data.frame(x2, x3, x4),
+        Qform = Y ~ A + x2 + x3 + x4,
+        gform = A ~ x2 + x3 + x4))
+    
+    tmle_list_true_true[[i]] <- tmle_true_true$estimates$ATE$psi
+    tmle_list_true_false[[i]] <- tmle_true_false$estimates$ATE$psi
+    tmle_list_false_true[[i]] <- tmle_false_true$estimates$ATE$psi
+    tmle_list_false_false[[i]] <- tmle_false_false$estimates$ATE$psi
+    tmle_list_ovb_ovb[[i]] <- tmle_ovb_ovb$estimates$ATE$psi
+  }
+  
+  return(list(n = nrow(dat[[i]]),
+              correct_correct = unlist(tmle_list_true_true),
+              correct_incorrect = unlist(tmle_list_true_false),
+              incorrect_correct = unlist(tmle_list_false_true),
+              incorrect_incorrect = unlist(tmle_list_false_false),
+              ovb = unlist(tmle_list_ovb_ovb))
+         )
+}
+
+
+tmle_out <- tmle_sim(sim_200)
+
+tmle_df <- perform(tmle_out, 'TMLE')
+
+write_csv(tmle_df, here('files', 'tmle_df.csv'))
+```
+
+```{r dml-sim, eval = F}
+dml_sim <- function(dat, seed = 185){
+  library(mlr3)
+  library(mlr3learners)
+  
+  set.seed(seed)
+  
+  n <- length(dat)
+  
+  correct_list <- list()
+  incorrect_list <- list()
+  ovb_list <- list()
+  
+  for(i in 1:n){
+    print(i)
+    
+    lgr::get_logger("mlr3")$set_threshold("warn")
+    
+    learner = lrn("regr.ranger", num.trees=500, 
+                  max.depth=5, min.node.size=2)
+    ml_l = learner$clone()
+    ml_m = learner$clone()
+    
+    
+    correct = DoubleML::DoubleMLPLR$new(
+      DoubleML::DoubleMLData$new(dat[[i]],
+                                 y_col = 'y',
+                                 d_cols = 'd',
+                                 x_cols = c('z1', 'z2', 'z3', 'z4')), 
+      ml_l=ml_l, ml_m=ml_m)
+    correct$fit()
+    correct_list[[i]] <- correct$all_coef[[1,1]]
+    
+    incorrect = DoubleML::DoubleMLPLR$new(
+      DoubleML::DoubleMLData$new(dat[[i]],
+                                 y_col = 'y',
+                                 d_cols = 'd',
+                                 x_cols = c('x1', 'x2', 'x3', 'x4')), 
+      ml_l=ml_l, ml_m=ml_m)
+    incorrect$fit()
+    incorrect_list[[i]] <- incorrect$all_coef[[1,1]]
+    
+    ovb = DoubleML::DoubleMLPLR$new(
+      DoubleML::DoubleMLData$new(dat[[i]],
+                                 y_col = 'y',
+                                 d_cols = 'd',
+                                 x_cols = c('x2', 'x3', 'x4')), 
+      ml_l=ml_l, ml_m=ml_m)
+    ovb$fit()
+    ovb_list[[i]] <- ovb$all_coef[[1,1]]
+    
+  }
+  return(list(n = nrow(dat[[i]]),
+              correct = unlist(correct_list),
+              incorrect = unlist(incorrect_list),
+              ovb = unlist(ovb_list))
+         )
+}
+
+dml_out <- dml_sim(sim_200)
+
+dml_df <- perform(dml_out, 'DML')
+
+write_csv(dml_df, here('files', 'dml_df.csv'))
+```
+
+
+```{r sim-results}
+bind_rows(
+  read_csv(here('files', 'lm_df.csv')),
+  read_csv(here('files', 'psm_df.csv')),
+  read_csv(here('files', 'aipw_df.csv')),
+  read_csv(here('files', 'tmle_df.csv')) %>%
+    filter(model %in% c('correct_correct', 'incorrect_incorrect', 'ovb')) %>%
+    mutate(model = c('correct', 'incorrect', 'ovb')),
+  read_csv(here('files', 'dml_df.csv'))
+  ) %>%
+  kableExtra::kable(booktabs = T, 
+                    linesep = '',
+                    caption = 'Results of Monte Carlo simulations over 100 replications. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, and mae is median absolute error.')
+```
+
+For these preliminary results, datasets of 200 observations are generated 100 times. For each estimation method, three specifications are used:  
+
+- "correct": the model is fitted to the true data-generating variables, $Z$
+- "incorrect": the model is fitted to the transformed variables $X$
+- "ovb": the model is fitted to $(x_2, x_3, x_4)^\top$; i.e., $x_1$ is omitted
+
+Results are shown in Table \@ref(tab:sim-results). Surprisingly, the double robust methods do not necessarily perform better. All methods perform well when the true data-generating variables are provided. When transformed variables are provided instead, bias, RMSE, and MAE rise for all of the estimation methods, even those that use flexible methods to model the response and treatment assignment surfaces. DML performs relatively well but RMSE and MAE still rise somewhat. When a variable is omitted, all of the methods perform poorly.  
 
 ## Simluation with Dorie et al. (2019) Data
 
@@ -320,7 +720,7 @@ set.seed(185)
 sim_list <- list()
 for(i in 1:20){ # up to 77
   #sim_list_nest <- list()
-  for(j in 1:10){ # up to 100
+  for(j in 1:5){ # up to 100
     print(paste0(i,',',j))
     sim_list[[paste0(i,',',j)]] <- aciccomp2016::dgp_2016(aciccomp2016::input_2016, 
                                       i, j, extraInfo = T)
@@ -328,8 +728,16 @@ for(i in 1:20){ # up to 77
   #sim_list[[i]] <- sim_list_nest
 }
 
-
-
+perform <- function(est_df, label){
+  est_df %>%
+    summarize(bias = mean(d - truth),
+              percent_bias = bias/sd(d),
+              rmse = sqrt(mean(d - truth)^2),
+              mae = median(abs(d - truth))) %>%
+    mutate(label = label) %>%
+    select(label, everything()) %>%
+    return()
+}
 
 # dat <- sim_list
 # i <- '3,1'
@@ -342,19 +750,16 @@ for(i in 1:20){ # up to 77
 #                            truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
 
 sim_linear <- list()
-for(i in c(1, 3))
-  for(j in 1:100){ 
-    print(paste0(i,',',j))
-    sim_linear[[paste0(i,',',j)]] <- aciccomp2016::dgp_2016(aciccomp2016::input_2016, 
+  for(j in 1:100){ # up to 100
+    print(j)
+    sim_linear[[j]] <- aciccomp2016::dgp_2016(aciccomp2016::input_2016, 
                                       3, j, extraInfo = T)
-  }
-}
 
 # sim_list <- sim_linear
 ```
 
 
-```{r lm-sim, eval = F}
+```{r lm-sim2, eval = F}
 lm_sim <- function(dat){
   start_time <- Sys.time()
   n <- length(dat)
@@ -379,35 +784,27 @@ lm_sim <- function(dat){
   fail_count <- sum(sapply(lm_list, function(x) is.null(x)))
   # in case last few are errors
   fail_count <- ifelse(length(lm_list) == n, fail_count, fail_count + (n - length(lm_list)))
-  
-  end_time <- Sys.time()
-  
+
   return(list(
     est_df = bind_rows(lm_list),
     fail_count = fail_count,
-    comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+    comp_time = as.numeric(Sys.time() - start_time)/(n-fail_count))
     )
 }
 
 lm_sim_out <- lm_sim(sim_list) 
-lm_sim_linear <- lm_sim(sim_linear) 
 
 
-lm_df <- lm_sim_out$est_df %>%
+lm_df <- perform(lm_sim_out$est_df, 'OLS') %>%
   mutate(fail_count = lm_sim_out$fail_count,
          comp_time = lm_sim_out$comp_time)
 
-lm_df_linear <- lm_sim_linear$est_df %>%
-  mutate(fail_count = lm_sim_linear$fail_count,
-         comp_time = lm_sim_linear$comp_time)
 
-
-write_csv(lm_df, here('files', 'lm_df.csv'))
-write_csv(lm_df_linear, here('files', 'lm_df_linear.csv'))
+write_csv(lm_df, here('files', 'lm_df2.csv'))
 ```
 
 
-```{r psm-sim, eval = F}
+```{r psm-sim2, eval = F}
 psm_sim <- function(dat){
   start_time <- Sys.time()
   n <- length(dat)
@@ -450,29 +847,25 @@ psm_sim <- function(dat){
   return(list(
     est_df = bind_rows(psm_list),
     fail_count = fail_count,
-    comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+    comp_time = as.numeric(end_time - start_time)/(n-fail_count))
   )
 }
 
 psm_sim_out <- psm_sim(sim_list) 
-psm_sim_linear <- psm_sim(sim_linear) 
+# psm_sim_1000 <- psm_sim(sim_1000) 
+# psm_sim_10000 <- psm_sim(sim_10000) 
 
-
-psm_df <- psm_sim_out$est_df %>%
+psm_df <- perform(psm_sim_out$est_df, 'PSM') %>%
   mutate(fail_count = psm_sim_out$fail_count,
          comp_time = psm_sim_out$comp_time)
 
-psm_df_linear <- psm_sim_linear$est_df %>%
-  mutate(fail_count = psm_sim_linear$fail_count,
-         comp_time = psm_sim_linear$comp_time)
-
-write_csv(psm_df, here('files', 'psm_df.csv'))
-write_csv(psm_df_linear, here('files', 'psm_df_linear.csv'))
+write_csv(psm_df, here('files', 'psm_df2.csv'))
 ```
 
-```{r aipw-sim, eval = F}
+```{r aipw-sim2, eval = F}
 aipw_sim <- function(dat, seed = 185){
-
+  library(gam)
+  
   start_time <- Sys.time()
   
   set.seed(seed)
@@ -485,14 +878,64 @@ aipw_sim <- function(dat, seed = 185){
     sim_dat <- data.frame(y = dat[[i]]$y, 
                           d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
                           dat[[i]]$x) %>%
-      fastDummies::dummy_cols(remove_first_dummy = T, remove_selected_columns = T)
+      mutate(across(where(is.factor), as.character))
+    
+    # Need to filter out cases without overlap (CausalGAM does not)
+    treat_levels <- sim_dat %>% 
+      filter(d == 1) %>%
+      select(where(is.character)) %>%
+      sapply(unique)
+    control_levels <- sim_dat %>% 
+      filter(d == 0) %>%
+      select(where(is.character)) %>%
+      sapply(unique)
+    
+    for(j in 1:length(treat_levels)){
+      if(!all(c(treat_levels[[j]] %in% control_levels[[j]]),control_levels[[j]] %in% treat_levels[[j]])){
+        # print(names(treat_levels)[j])
+        # print(treat_levels[[j]])
+        # print(control_levels[[j]])
 
+        var_name <- names(treat_levels)[j]
+
+        sim_dat <- sim_dat %>%
+          filter(!!sym(var_name) %in% c(treat_levels[[j]]) &
+                   !!sym(var_name) %in% c(control_levels[[j]]))
+        
+        # fail_count <- fail_count + 1
+      }
+    }
+    
+
+    
+    class_vec <- sapply(sim_dat, function(x) class(x))
+    cont_names <- names(sim_dat[, class_vec == 'numeric'])
+    cont_names <- cont_names[3:length(cont_names)]
+    not_cont_names <- names(sim_dat[, class_vec != 'numeric'])
+    
+    pscore_form <- as.formula(paste0('d ~ s(', 
+                                     paste(cont_names, collapse = ') + s('), ') +',
+                                     paste(not_cont_names, collapse = ' + ')))
+    outcome_form <- as.formula(paste0('y ~ s(', 
+                                     paste(cont_names, collapse = ') + s('), ') +',
+                                     paste(not_cont_names, collapse = ' + ')))
+    
+    
     tryCatch({
-      forest <- grf::causal_forest(X = select(sim_dat, starts_with('x')), Y = sim_dat$y, W = sim_dat$d)
+      aipw_out <- CausalGAM::estimate.ATE(
+      pscore.formula = pscore_form,
+      pscore.family = binomial,
+      outcome.formula.t =outcome_form,
+      outcome.formula.c = outcome_form,
+      outcome.family = gaussian,
+      treatment.var = 'd',
+      data = sim_dat,
+      divby0.action="t",
+      divby0.tol=0.001,
+      var.gam.plot=FALSE,
+      nboot=0)
       
-      aipw_out <- grf::average_treatment_effect(forest, target.sample = 'treated', method = 'AIPW')
-      
-      aipw_list[[i]] <- data.frame(d = aipw_out[[1]],
+      aipw_list[[i]] <- data.frame(d = aipw_out$ATE.AIPW.hat,
                                truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
         
   }, error=function(e){
@@ -505,56 +948,58 @@ aipw_sim <- function(dat, seed = 185){
   fail_count <- ifelse(length(aipw_list) == n, fail_count, fail_count + (n - length(aipw_list)))
   
   
-  end_time <- Sys.time()
-  
   return(list(
       est_df = bind_rows(aipw_list),
       fail_count = fail_count,
-      comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+      comp_time = as.numeric(Sys.time() - start_time)/(n-fail_count))
   )
 }
 
 aipw_out <- aipw_sim(sim_list)
-aipw_out_linear <- aipw_sim(sim_linear)
 
-aipw_df <- aipw_out$est_df %>%
+aipw_df <- perform(aipw_out$est_df, 'AIPW') %>%
   mutate(fail_count = aipw_out$fail_count,
          comp_time = aipw_out$comp_time)
 
-aipw_df_linear <- aipw_out_linear$est_df %>%
-  mutate(fail_count = aipw_out_linear$fail_count,
-         comp_time = aipw_out_linear$comp_time)
-
-write_csv(aipw_df,  here('files', 'aipw_df.csv'))
-write_csv(aipw_df_linear,  here('files', 'aipw_df_linear.csv'))
+write_csv(aipw_df,  here('files', 'aipw_df2.csv'))
 
 ```
 
 
 
-```{r tmle-sim, eval = F}
+```{r tmle-sim2, eval = F}
 
-tmle_sim <- function(dat, seed = 185){
+tmle_sim <- function(dat){
   start_time <- Sys.time()
   
-  set.seed(seed)
   n <- length(dat)
+  
   tmle_list <- list()
-  # fail_count <- 0
+  
+  pscore_form <- as.formula(paste0('A ~ ', 
+                                   paste(names(dat[[1]]$x), collapse = ' + ')))
+  outcome_form <- as.formula(paste0('y ~ A +', 
+                                   paste(names(dat[[1]]$x), collapse = ' + ')))
   
   for(i in 1:n){
+    
     print(paste0(i, ' out of ', n))
-    sim_dat <- data.frame(y = dat[[i]]$y, 
-                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
-                          dat[[i]]$x) %>%
-      fastDummies::dummy_cols(remove_first_dummy = T, remove_selected_columns = T)
+    sim_dat <- data.frame(Y = dat[[i]]$y, 
+                          A = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x) 
+    
 
-    tryCatch({
-      forest <- grf::causal_forest(X = select(sim_dat, starts_with('x')), Y = sim_dat$y, W = sim_dat$d)
+
+   tryCatch({
+
+    tmle_out <- tmle::tmle(
+                Y = sim_dat$Y,
+                A = sim_dat$A,
+                W = select(sim_dat, x_1:x_58),
+                Qform = Y ~ .,
+                gform = A ~ .)
       
-      tmle_out <- grf::average_treatment_effect(forest, target.sample = 'treated', method = 'TMLE')
-      
-      tmle_list[[i]] <- data.frame(d = tmle_out[[1]],
+      tmle_list[[i]] <- data.frame(d = tmle_out$estimates$ATE$psi,
                                truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
         
   }, error=function(e){
@@ -566,32 +1011,24 @@ tmle_sim <- function(dat, seed = 185){
   # in case last few are errors
   fail_count <- ifelse(length(tmle_list) == n, fail_count, fail_count + (n - length(tmle_list)))
   
-  end_time <- Sys.time()
-  
  return(list(
       est_df = bind_rows(tmle_list),
       fail_count = fail_count,
-      comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+      comp_time = as.numeric(Sys.time() - start_time)/(n-fail_count))
   )
 }
 
 
 tmle_out <- tmle_sim(sim_list)
-tmle_out_linear <- tmle_sim(sim_linear)
 
-tmle_df <- tmle_out$est_df %>%
+tmle_df <- perform(tmle_out$est_df, 'TMLE') %>%
   mutate(fail_count = tmle_out$fail_count,
          comp_time = tmle_out$comp_time)
 
-tmle_df_linear <- tmle_out_linear$est_df %>%
-  mutate(fail_count = tmle_out_linear$fail_count,
-         comp_time = tmle_out_linear$comp_time)
-
-write_csv(tmle_df, here('files', 'tmle_df.csv'))
-write_csv(tmle_df_linear, here('files', 'tmle_df_linear.csv'))
+write_csv(tmle_df, here('files', 'tmle_df2.csv'))
 ```
 
-```{r dml-sim, eval = F}
+```{r dml-sim2, eval = F}
 dml_sim <- function(dat, seed = 185){
   library(mlr3)
   library(mlr3learners)
@@ -638,61 +1075,249 @@ dml_sim <- function(dat, seed = 185){
   # in case last few are errors
   fail_count <- ifelse(length(dml_list) == n, fail_count, fail_count + (n - length(dml_list)))
   
-  end_time <- Sys.time()
-  
   return(list(
       est_df = bind_rows(dml_list),
       fail_count = fail_count,
-      comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+      comp_time = as.numeric(Sys.time() - start_time)/(n-fail_count))
       )
 }
 
 dml_out <- dml_sim(sim_list)
-dml_out_linear <- dml_sim(sim_linear)
 
-dml_df <- dml_out$est_df %>%
+dml_df <- perform(dml_out$est_df, 'DML') %>%
   mutate(fail_count = dml_out$fail_count,
          comp_time = dml_out$comp_time)
-dml_df_linear <- dml_out_linear$est_df %>%
-  mutate(fail_count = dml_out_linear$fail_count,
-         comp_time = dml_out_linear$comp_time)
 
-write_csv(dml_df, here('files', 'dml_df.csv'))
-write_csv(dml_df_linear, here('files', 'dml_df_linear.csv'))
+write_csv(dml_df, here('files', 'dml_df2.csv'))
 ```
 
 ```{r dorie-results}
 bind_rows(
-  perform(read_csv(here('files', 'lm_df.csv')), 'lm'),
-  perform(read_csv(here('files', 'psm_df.csv')), 'psm'),
-  perform(read_csv(here('files', 'aipw_df.csv')), 'aipw'),
-  perform(read_csv(here('files', 'tmle_df.csv')), 'tmle'),
-  perform(read_csv(here('files', 'dml_df.csv')), 'dml')
+  read_csv(here('files', 'lm_df2.csv')),
+  read_csv(here('files', 'psm_df2.csv')),
+  read_csv(here('files', 'aipw_df2.csv')),
+  read_csv(here('files', 'tmle_df2.csv')),
+  read_csv(here('files', 'dml_df2.csv'))
   ) %>%
+  select(-comp_time) %>%
   kableExtra::kable(booktabs = T, 
-                    digits = 3,
                     linesep = '',
                     caption = 'Results of Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 5 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is average computation time measured in seconds for each dataset.')
 ```
 
 ```{r dorie-results-linear}
 bind_rows(
-  perform(read_csv(here('files', 'lm_df_linear.csv')), 'lm'),
-  perform(read_csv(here('files', 'psm_df_linear.csv')), 'psm'),
-  perform(read_csv(here('files', 'aipw_df_linear.csv')), 'aipw'),
-  perform(read_csv(here('files', 'tmle_df_linear.csv')), 'tmle'),
-  perform(read_csv(here('files', 'dml_df_linear.csv')), 'dml')
+  read_csv(here('files', 'lm_df3.csv')),
+  read_csv(here('files', 'psm_df3.csv')),
+  read_csv(here('files', 'aipw_df3.csv')),
+  read_csv(here('files', 'tmle_df3.csv')),
+  read_csv(here('files', 'dml_df3.csv'))
   ) %>%
+  select(-comp_time) %>%
   kableExtra::kable(booktabs = T, 
-                    digits = 3,
                     linesep = '',
-                    caption = 'Results of Monte Carlo simulations using the linear DGP for dataset 3 from Dorie et al. (2019), 5 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is average computation time measured in seconds for each dataset.')
+                    caption = 'Results of Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 5 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is average computation time measured in seconds for each dataset.')
 ```
 
 Results are shown in Table \@ref(tab:dorie-results). The methods all have similar levels of bias and error, but AIPW performs better than the other methods on all measures. AIPW did fail, however, on the most data sets; the package `CausalGAM` package does not do well with lack of overlap of factor variables between treated and control groups. 
 
 
+## Tests on PISA Data
 
+
+
+```{r test-sample, eval = T}
+set.seed(185)
+pisa_test <- bind_rows(
+  pisa %>%
+    filter(match_country == 'Albania', immigrant == T) %>%
+    select(math1, immigrant, mom_ed, dad_ed,
+                          female, early_ed, cultural_pos, home_ed, age) ,
+    #sample_n(200),
+  pisa %>%
+    filter(match_country == 'Albania', immigrant == F) %>%
+        select(math1, immigrant, mom_ed, dad_ed,
+                          female, early_ed, cultural_pos, home_ed, age) %>%
+    sample_n(1000)
+  )
+
+# pisa_test <- pisa %>%
+#     filter(match_country == 'Albania') %>%
+#  select(math1, immigrant, mom_ed, dad_ed,
+#                          female, early_ed, cultural_pos, home_ed, age) 
+
+
+#  filter(match_country %in% c('Portugal', 'Germany', 'United States'))
+```
+
+```{r lm-pisa, eval = F}
+lm_out_pisa <- lm(math1 ~ immigrant + mom_ed + dad_ed + 
+                          female + early_ed + cultural_pos + home_ed + age, 
+                   pisa_test) %>%
+  tidy()
+
+
+lm_df <- data.frame(method = 'OLS',
+                     ATE = pull(lm_out_pisa, estimate)[lm_out_pisa$term == 'immigrant'],
+                     se = pull(lm_out_pisa, std.error)[lm_out_pisa$term == 'immigrant'])
+```
+
+
+```{r psm-pisa, eval = F}
+match_pisa <- MatchIt::matchit(immigrant ~ mom_ed + dad_ed + 
+                          female + early_ed + cultural_pos + home_ed + age,
+                       data = pisa_test,
+                       method = 'nearest',
+                       distance = 'glm') 
+
+psm_out_pisa <- lm(math1 ~ immigrant + mom_ed + dad_ed + 
+                          female + early_ed + cultural_pos + home_ed + age, 
+                   MatchIt::match.data(match_pisa), 
+                   weights = weights)
+
+psm_df <- lmtest::coeftest(psm_out_pisa, 
+                            vcov. = sandwich::vcovCL, 
+                            cluster = ~subclass) %>%
+  tidy()
+
+psm_df <- data.frame(method = 'PSM',
+                     ATE = pull(psm_df, estimate)[psm_df$term == 'immigrant'],
+                     se = pull(psm_df, std.error)[psm_df$term == 'immigrant'])
+```
+
+```{r aipw-pisa, eval = F}
+library(gam)
+
+pisa_test_dummies <- pisa_test %>%
+  select(-early_ed) %>%
+  bind_cols(model.matrix(~ early_ed, data = pisa_test)) %>%
+  as.data.frame()
+
+aipw_pisa_out <- CausalGAM::estimate.ATE(
+        pscore.formula = immigrant ~ s(mom_ed) + s(dad_ed) + female + 
+          `early_ed0-1` + `early_ed1+` + s(cultural_pos) + s(home_ed) + s(age),
+        pscore.family = binomial,
+        outcome.formula.t = math1 ~ s(mom_ed) + s(dad_ed) + female + 
+          `early_ed0-1` + `early_ed1+` + s(cultural_pos) + s(home_ed) + s(age),
+        outcome.formula.c = math1 ~ s(mom_ed) + s(dad_ed) + female + 
+          `early_ed0-1` + `early_ed1+` + s(cultural_pos) + s(home_ed) + s(age),
+        outcome.family = gaussian,
+        treatment.var = 'immigrant',
+        data = pisa_test_dummies,
+        divby0.action="t",
+        divby0.tol=0.001,
+        var.gam.plot=FALSE,
+        nboot = 0)
+
+
+
+
+aipw_df <- data.frame(method = 'AIPW',
+                     ATE = aipw_pisa_out$ATE.AIPW.hat,
+                     se = aipw_pisa_out$ATE.AIPW.asymp.SE)
+```
+
+
+```{r tmle-pisa, eval = F}
+# Y = outcome
+# A = binary treatment
+# W = covariates
+
+tmle_out <- with(pisa_test, tmle::tmle(
+                Y = math1,
+                A = immigrant,
+                W = select(pisa_test, mom_ed, dad_ed, 
+                          female, early_ed, cultural_pos, home_ed, age),
+                verbose = T))
+
+tmle_df <- data.frame(method = 'TMLE',
+           ATE = tmle_out$estimates$ATE$psi,
+           se = sqrt(tmle_out$estimates$ATE$var.psi))
+
+```
+
+```{r dml, eval = F}
+dml_data <- DoubleML::DoubleMLData$new(as.data.frame(pisa_test),
+                y_col = 'math1',
+                d_cols = 'immigrant',
+                x_cols = c('mom_ed', 'dad_ed', 'female', 'early_ed', 
+                'cultural_pos', 'home_ed', 'age'))
+
+library(mlr3)
+library(mlr3learners)
+# surpress messages from mlr3 package during fitting
+lgr::get_logger("mlr3")$set_threshold("warn")
+
+learner = lrn("regr.ranger", num.trees=500, 
+              max.depth=5, min.node.size=2)
+ml_l = learner$clone()
+ml_m = learner$clone()
+
+
+set.seed(185)
+
+obj_dml_plr = DoubleML::DoubleMLPLR$new(dml_data, ml_l=ml_l, ml_m=ml_m)
+obj_dml_plr$fit()
+
+
+
+
+dml_df <- data.frame(method = 'DML',
+           ATE = obj_dml_plr$all_coef,
+           se = obj_dml_plr$se[['immigrant']])
+```
+
+```{r plce, eval = F}
+plce_out <- with(pisa_test, PLCE::plce(
+                y = math1,
+                treat = immigrant,
+                X = as.matrix(select(pisa_test, mom_ed, dad_ed, #early_ed,
+                          female, cultural_pos, home_ed, age))))
+
+
+```
+
+```{r bart, eval = F}
+set.seed(159)
+bart_out <- bartCause::bartc(
+  response = pisa_test$math1,
+  treatment = pisa_test$immigrant,
+  confounders = as.data.frame(select(pisa_test, mom_ed, dad_ed,
+                          female, early_ed, cultural_pos, home_ed, age))
+  )
+
+summary(bart_out)
+
+# sensitivity analysis:
+# Dorie et al., Statistics in Medicine, 2016
+# treatSens (CRAN) -- use BART option
+```
+
+
+
+For the comparison using real data, the analysis uses pooled 2012, 2015, and 2018 waves of the Programme for Student Assessment (PISA), which assesses 15-year-olds’ reading, math, and science skills every three years in dozens of countries worldwide. The goal is to estimate an effect of migration, so `r sum(pisa$immigrant == 1)` immigrant adolescents are compared to  `r sum(pisa$immigrant == 0)` non-migrants in their countries of origin. Outcome variables consist of reading, math, and science scores, which the OECD constructs to have a global mean of 500 and standard deviation of 100. I adjust for the pre-migration characteristics of mother's and father's education (measured in 6-category ISCED, entered as a continuous variable in regressions), cultural possessions, home educational resources, age, a categorical variable for early childhood education and care (ECEC), survey year, and two-category gender.  
+
+For these preliminary results, only one group is considered: children born in Albania. `r sum(pisa_test$immigrant == 1)` immigrant Albanians are compared to 1,000 non-immigrant Albanians. In addition, only math scores are considered. Results using different methods are presented in Table \@ref(tab:pisa-results).  
+
+Compared to the other methods, OLS regression estimates a more negative effect of migration on math scores. However, ATE estimates are fairly similar across the other estimation methods, as are standard errors.
+
+```{r pisa-results}
+# bind_rows(lm_df, psm_df, aipw_df, tmle_df, dml_df)  %>%
+#   write_csv(here('files', 'pisa_df.csv'))
+
+read_csv(here('files', 'pisa_df.csv')) %>%
+  kableExtra::kable(booktabs = T, 
+                    linesep = '',
+                    caption = 'Results of methods tested on PISA math scores for 440 immigrant and 1000 non-immigrant Albanian students. The ATE estimates the effect of migration on the math1 test score of 15-year-olds in the survey, with adjustments for parents\' education, cultural possessions, home educational resources, age, a categorical variable for early childhood education and care (ECEC), survey year, and two-category gender.')
+```
+
+
+
+# Next Steps  
+
+- simulations over more data sets
+- testing methods on larger samples of PISA data
+- R code to implement these methods
 
 
 
