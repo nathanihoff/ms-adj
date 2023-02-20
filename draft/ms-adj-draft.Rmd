@@ -9,7 +9,7 @@ output:
     latex_engine: xelatex
 always_allow_html: true
 header-includes:
-  - \usepackage{setspace}\doublespace
+  #- \usepackage{setspace}\doublespace
   # - \usepackage[nolists, fighead, tabhead]{endfloat}
   # - \usepackage{endnotes}
   # - \let\footnote=\endnote
@@ -311,7 +311,7 @@ In 2016, the Atlantic Causal Inference Conference hosted a competition for causa
 - treatment effect heterogeneity
 - overall magnitude of the treatment effect  
 
-The 20 data sets used here cover a range of these attributes; see the supplemental material from @dorie_2019_automated for details. For these preliminary results, I used 5 simulations of each data set, resulting in 100 data sets. I then calculated the same statistics as in Table \@ref(tab:sim-results): percent bias, root-mean squared error, and median average error. I also include the number of data sets for which the method failed and the average computation time for each data set.
+The 20 data sets used here cover a range of these attributes; see the supplemental material from @dorie_2019_automated for details. For these preliminary results, I used 5 simulations of each data set, resulting in 100 data sets. I then calculated bias, percent bias (the estimator's bias as a percentage of its standard error), root mean squared error (rmse), and median absolute error (mae). I also include the number of data sets for which the method failed and the average computation time for each data set, in seconds.
 
 
 
@@ -350,7 +350,7 @@ for(i in c(1, 3))
   }
 }
 
-# sim_list <- sim_linear
+
 ```
 
 
@@ -367,8 +367,9 @@ lm_sim <- function(dat){
     
     
     tryCatch({
-      lm_out <- lm(y ~ d + ., sim_dat)
-      lm_list[[i]] <- data.frame(d = lm_out$coefficients[['d']],
+      lm_out <- tidy(lm(y ~ d + ., sim_dat))
+      lm_list[[i]] <- data.frame(d = lm_out[[2,2]],
+                                 se = lm_out[[2,3]],
                                  truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
       }, error=function(e){
         cat("ERROR :",conditionMessage(e), "\n")
@@ -404,6 +405,9 @@ lm_df_linear <- lm_sim_linear$est_df %>%
 
 write_csv(lm_df, here('files', 'lm_df.csv'))
 write_csv(lm_df_linear, here('files', 'lm_df_linear.csv'))
+
+# lm_lalonde <- lm_sim(lalonde)
+
 ```
 
 
@@ -418,7 +422,7 @@ psm_sim <- function(dat){
                           d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
                           dat[[i]]$x)
     
-    form <- as.formula(paste0('d ~ ', paste(names(sim_dat[3:60]), collapse = '+')))
+    form <- as.formula(paste0('d ~ ', paste(names(dat[[i]]$x), collapse = '+')))
     match_out <- MatchIt::matchit(form,
                            data = sim_dat,
                            method = 'nearest',
@@ -426,14 +430,16 @@ psm_sim <- function(dat){
     
     # match_data <- MatchIt::match.data(match_out) 
     # apply(match_data, 1, unique)
-    form2 <- as.formula(paste0('y ~ d + ', paste(names(sim_dat[3:60]), collapse = '+')))
+    form2 <- as.formula(paste0('y ~ d + ', paste(names(dat[[i]]$x), collapse = '+')))
     
   tryCatch({
     psm_out <- lm(form2, 
                   MatchIt::match.data(match_out), 
-                  weights = weights)
-    psm_list[[i]] <- data.frame(d = psm_out$coefficients[['d']],
-                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+                  weights = weights) %>%
+      tidy()
+    psm_list[[i]] <- data.frame(d = psm_out[[2,2]],
+                                se = psm_out[[2,3]],
+                                truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
         
   }, error=function(e){
     cat("ERROR :",conditionMessage(e), "\n")
@@ -483,16 +489,25 @@ aipw_sim <- function(dat, seed = 185){
   for(i in 1:n){
     print(paste0(i, ' out of ', n))
     sim_dat <- data.frame(y = dat[[i]]$y, 
-                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
-                          dat[[i]]$x) %>%
-      fastDummies::dummy_cols(remove_first_dummy = T, remove_selected_columns = T)
+                          d = as.numeric(ifelse(dat[[i]]$z == 'trt', 1, 0)), 
+                          dat[[i]]$x)
+    
+    tryCatch({
+      sim_dat <- sim_dat %>%
+        fastDummies::dummy_cols(remove_first_dummy = T, remove_selected_columns = T) 
+      }, error=function(e){
+      })
 
     tryCatch({
-      forest <- grf::causal_forest(X = select(sim_dat, starts_with('x')), Y = sim_dat$y, W = sim_dat$d)
+      forest <- grf::causal_forest(X = select(sim_dat, 3:length(names(sim_dat))), 
+                                   Y = sim_dat$y, W = sim_dat$d)
+      # forest <- grf::causal_forest(X = select(sim_dat, starts_with('x')), 
+      #                              Y = sim_dat$y, W = sim_dat$d)
       
       aipw_out <- grf::average_treatment_effect(forest, target.sample = 'treated', method = 'AIPW')
       
       aipw_list[[i]] <- data.frame(d = aipw_out[[1]],
+                                   se = aipw_out[[2]],
                                truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
         
   }, error=function(e){
@@ -546,15 +561,24 @@ tmle_sim <- function(dat, seed = 185){
     print(paste0(i, ' out of ', n))
     sim_dat <- data.frame(y = dat[[i]]$y, 
                           d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
-                          dat[[i]]$x) %>%
-      fastDummies::dummy_cols(remove_first_dummy = T, remove_selected_columns = T)
+                          dat[[i]]$x) 
+    
+    tryCatch({
+      sim_dat <- sim_dat %>%
+        fastDummies::dummy_cols(remove_first_dummy = T, remove_selected_columns = T) 
+      }, error=function(e){
+      })
 
     tryCatch({
-      forest <- grf::causal_forest(X = select(sim_dat, starts_with('x')), Y = sim_dat$y, W = sim_dat$d)
+      forest <- grf::causal_forest(X = select(sim_dat, 3:length(names(sim_dat))), 
+                                   Y = sim_dat$y, W = sim_dat$d)
+      # forest <- grf::causal_forest(X = select(sim_dat, starts_with('x')), 
+      #   Y = sim_dat$y, W = sim_dat$d)
       
       tmle_out <- grf::average_treatment_effect(forest, target.sample = 'treated', method = 'TMLE')
       
       tmle_list[[i]] <- data.frame(d = tmle_out[[1]],
+                                   se = tmle_out[[2]],
                                truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
         
   }, error=function(e){
@@ -627,6 +651,7 @@ dml_sim <- function(dat, seed = 185){
       
       dml_out$fit()
       dml_list[[i]] <- data.frame(d = dml_out$all_coef[[1,1]],
+                                  se = dml_out$all_se[[1,1]],
                                truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
       
   }, error=function(e){
@@ -691,8 +716,233 @@ bind_rows(
 
 Results are shown in Table \@ref(tab:dorie-results). The methods all have similar levels of bias and error, but AIPW performs better than the other methods on all measures. AIPW did fail, however, on the most data sets; the package `CausalGAM` package does not do well with lack of overlap of factor variables between treated and control groups. 
 
+```{r lalonde-data}
+unemp_func <- function(x){
+  x %>%
+    as.data.frame() %>%
+    mutate(re74_0 = re74 == 0,
+         re75_0 = re75 == 0) 
+}
+
+lalonde_exp <- read_dta(here('data', 'nsw.dta')) %>%
+  as.data.frame() %>%
+  mutate(re75_0 = re75 == 0)
+lalonde_exp_74 <- read_dta(here('data', 'nsw_dw.dta')) %>%
+  unemp_func()
+lalonde_cps1_controls <- read_dta(here('data', 'cps_controls.dta')) %>%
+  unemp_func()
+lalonde_cps3_controls <- read_dta(here('data', 'cps_controls3.dta')) %>%
+  unemp_func()
+lalonde_psid1_controls <- read_dta(here('data', 'psid_controls.dta')) %>%
+  unemp_func()
+lalonde_psid3_controls <- read_dta(here('data', 'psid_controls3.dta')) %>%
+  unemp_func()
+```
 
 
+## Comparisons using LaLonde NSW Data
+
+As another benchmark test, I use data from LaLonde's [-@lalonde_1986_evaluating] study of the National Supported Work Demonstration (NWS), as provided by @dehejia_1999_causal. The NWS randomly provided training to disadvantaged workers, allowing an experimental estimate of the effect of the intervention. This study had `r nrow(filter(lalonde_exp, treat == T))` treated and `r nrow(filter(lalonde_exp, treat == F))` control participants
+
+LaLonde compared these experimental estimates to estimates comparing the treated group to samples drawn from the Panel Study of Income Dynamics (PSID) and Westat's Matched Current Population Survey-Social Security Administration File (CPS). The PSID-1 sample (*n* = `r nrow(lalonde_psid1_controls)`) contains all male household heads under 55 who did not classify themselves as retired in 1975, and the PSID-3 sample (*n* = `r nrow(lalonde_psid3_controls)`) further restricts this to men who were not working in spring of 1976 or 1975. The CPS-1 sample (*n* = `r nrow(lalonde_cps1_controls)`) includes all CPS males under 55, and CPS-3 (*n* = `r nrow(lalonde_cps3_controls)`) restricts this two those who were not working in March 1976 whose income in 1975 was below the poverty level. Restricting these observational samples is meant to get closer to the population eligible for the NWS.  
+
+Following @dehejia_1999_causal, I present results for the original samples analyzed by @lalonde_1986_evaluating, but I also include results using a subsample of the experimental group that has 1974 earnings data available (`r nrow(filter(lalonde_exp_74, treat == T))` treated and `r nrow(filter(lalonde_exp_74, treat == F))` control participants). 
+
+I again compare the three double robust methods to a linear model fitted by OLS ("lm") and propensity score matching using logistic regression ("psm"). Results are presented in Table \@ref(tab:lalonde).  
+
+For the original NSW data, none of the methods perform especially well. For the PSID samples, none of the estimates have a positive sign, as in the experimental estimates. For CPS, TMLE is the only method that achieves a positive sign.  
+
+Including 1974 earnings data allows much better estimates with the observational control groups. (Note that the restricted experimental sample has a greater experimental effect estimate than the full experimental sample.) For PSID-1, TMLE performs the best, while DML performs much worse than even OLS. For PSID-3, OLS and TMLE both perform well. For CPS-1 and CPS-3, TMLE performs the best.
+
+
+
+```{r lalonde-calc, eval = F}
+lalonde_func <- function(dataset, sample, include_74 = F){
+  set.seed(872)
+  
+  if(include_74 == F){
+    lalonde_variables <- names(lalonde_exp)[3:9]
+    dataset <- bind_rows(filter(lalonde_exp, treat == 1), dataset)
+    
+  } else {
+    lalonde_variables <- names(lalonde_exp_74)[3:10]
+    dataset <- bind_rows(filter(lalonde_exp_74, treat == 1), dataset)
+  }
+  
+  dataset <- list(list(y = dataset$re78,
+                z = ifelse(dataset$treat == 1, 'trt', 'ctl'),
+                x = dataset[,lalonde_variables]))
+  
+  lapply(list(
+    lm_sim(dataset),
+    psm_sim(dataset),
+    aipw_sim(dataset),
+    tmle_sim(dataset),
+    dml_sim(dataset)),
+  bind_cols) %>%
+    bind_rows() %>%
+    mutate(method = c('lm', 'psm', 'aipw', 'tmle', 'dml'),
+           sample = sample,
+           estimate = paste0(round(d), ' (', round(se), ')')) %>%
+    select(method, sample, estimate) 
+}
+
+bind_rows(
+  lalonde_func(filter(lalonde_exp, treat == 0), sample = 'experimental'),
+  lalonde_func(lalonde_psid1_controls, 'PSID-1'),
+  lalonde_func(lalonde_psid3_controls, 'PSID-3'),
+  lalonde_func(lalonde_cps1_controls, 'CPS-1'),
+  lalonde_func(lalonde_cps1_controls, 'CPS-3')) %>%
+    pivot_wider(names_from = 'sample', values_from = estimate) %>%
+  write_csv(here('files', 'lalonde.csv'))
+
+
+bind_rows(
+  lalonde_func(filter(lalonde_exp_74, treat == 0), sample = 'experimental', T),
+  lalonde_func(lalonde_psid1_controls, 'PSID-1', T),
+  lalonde_func(lalonde_psid3_controls, 'PSID-3', T),
+  lalonde_func(lalonde_cps1_controls, 'CPS-1', T),
+  lalonde_func(lalonde_cps1_controls, 'CPS-3', T)) %>%
+    pivot_wider(names_from = 'sample', values_from = estimate) %>%
+  write_csv(here('files', 'lalonde_74.csv'))
+# 
+# lalonde_cps1 <- bind_rows(filter(lalonde_exp, treat == 1), lalonde_cps1_controls)
+# lalonde_cps3 <- bind_rows(filter(lalonde_exp, treat == 1), lalonde_cps3_controls)
+# 
+# lalonde_exp <- list(list(y = as.numeric(lalonde_exp$re78),
+#                 z = ifelse(lalonde_exp$treat == 1, 'trt', 'ctl'),
+#                 x = lalonde_exp[,lalonde_variables]))
+# lalonde_cps1 <- list(list(y = lalonde_cps1$re78,
+#                 z = ifelse(lalonde_cps1$treat == 1, 'trt', 'ctl'),
+#                 x = lalonde_cps1[,lalonde_variables]))
+# lalonde_cps3 <- list(list(y = lalonde_cps3$re78,
+#                 z = ifelse(lalonde_cps3$treat == 1, 'trt', 'ctl'),
+#                 x = lalonde_cps3[,lalonde_variables]))
+# 
+# 
+# set.seed(185)
+# lapply(list(
+#     lm_sim(lalonde_exp),
+#     lm_sim(lalonde_cps1),
+#     lm_sim(lalonde_cps3),
+#     psm_sim(lalonde_exp),
+#     psm_sim(lalonde_cps1),
+#     psm_sim(lalonde_cps3),
+#     aipw_sim(lalonde_exp),
+#     aipw_sim(lalonde_cps1),
+#     aipw_sim(lalonde_cps3),
+#     tmle_sim(lalonde_exp),
+#     tmle_sim(lalonde_cps1),
+#     tmle_sim(lalonde_cps3),
+#     dml_sim(lalonde_exp),
+#     dml_sim(lalonde_cps1),
+#     dml_sim(lalonde_cps3)), 
+#   bind_cols) %>% 
+#   bind_rows()  %>%
+#   mutate(method = rep(c('lm', 'psm', 'aipw', 'tmle', 'dml'), each = 3),
+#          sample = rep(c('experimental', 'CPS-1', 'CPS-3'), 5),
+#          estimate = paste0(round(d), ' (', round(se), ')')) %>%
+#   select(method, sample, estimate) %>%
+#   pivot_wider(names_from = 'sample', values_from = estimate) %>%
+#  write_csv(here('files', 'lalonde_74.csv'))
+
+
+# lalonde <- CBPS::LaLonde %>%
+#   filter(re74.miss == F) %>%
+#   mutate(re74_0 = re74 == 0,
+#          re75_0 = re75 == 0)
+# 
+# lalonde_exp <- filter(lalonde, exper == 1)
+# lalonde_exp <- list(list(y = lalonde_exp$re78,
+#                 z = ifelse(lalonde_exp$treat == 1, 'trt', 'ctl'),
+#                 x = select(lalonde_exp, age:re75, re74_0, re75_0)))
+# lalonde_psid <- filter(lalonde, (exper == 1 & treat == 1) | exper == 0)
+# lalonde_psid <- list(list(y = lalonde_psid$re78,
+#                 z = ifelse(lalonde_psid$treat == 1, 'trt', 'ctl'),
+#                 x = select(lalonde_psid, age:re75, re74_0, re75_0)))
+# 
+# 
+# lalonde_cps <- MatchIt::lalonde %>%
+#   mutate(re74_0 = re74 == 0,
+#          re75_0 = re75 == 0)
+# lalonde_cps <- list(list(y = lalonde_cps$re78,
+#                 z = ifelse(lalonde_cps$treat == 1, 'trt', 'ctl'),
+#                 x = select(lalonde_cps, age:re75, re74_0, re75_0)))
+# 
+# 
+# set.seed(185)
+# lapply(list(
+#     lm_sim(lalonde_exp),
+#     lm_sim(lalonde_psid),
+#     lm_sim(lalonde_cps),
+#     psm_sim(lalonde_exp),
+#     psm_sim(lalonde_psid),
+#     psm_sim(lalonde_cps),
+#     aipw_sim(lalonde_exp),
+#     aipw_sim(lalonde_psid),
+#     aipw_sim(lalonde_cps),
+#     tmle_sim(lalonde_exp),
+#     tmle_sim(lalonde_psid),
+#     tmle_sim(lalonde_cps),
+#     dml_sim(lalonde_exp),
+#     dml_sim(lalonde_psid),
+#     dml_sim(lalonde_cps)), 
+#   bind_cols) %>% 
+#   bind_rows()  %>%
+#   mutate(method = rep(c('lm', 'psm', 'aipw', 'tmle', 'dml'), each = 3),
+#          sample = rep(c('experimental', 'PSID', 'CPS'), 5),
+#          estimate = paste0(round(d), ' (', round(se), ')')) %>%
+#   select(method, sample, estimate) %>%
+#   pivot_wider(names_from = 'sample', values_from = estimate) %>%
+#   write_csv(here('files', 'lalonde.csv'))
+```
+
+
+
+```{r lalonde}
+bind_rows(
+  read_csv(here('files', 'lalonde.csv')) %>%
+    mutate(sample = 'Original LaLonde'),
+  read_csv(here('files', 'lalonde_74.csv')) %>%
+    mutate(sample = 'With 1974 earnings')) %>%
+  select(sample, method, everything()) %>%
+  kableExtra::kable(booktabs = T, 
+                    # digits = 3,
+                    # linesep = '',
+                    caption = 'ATE estimates for Lalonde NSW data as provided by Dehejia and Wahba (1999), with CPS and PSID comparison groups. Standard errors shown in parentheses.')
+
+# bind_rows(
+#   read_csv(here('files', 'lalonde.csv')) %>%
+#     mutate(sample = 'LaLonde'),
+#   read_csv(here('files', 'lalonde_74.csv')) %>%
+#     mutate(sample = 'DW (with 1974 earnings)')) %>%
+#   select(sample, everything()) %>%
+#   kableExtra::kable(booktabs = T, 
+#                     # digits = 3,
+#                     linesep = '',
+#                     caption = 'ATE estimates for Lalonde NSW data from Dehejia and Wahba (1999), with PSID ')
+
+
+# lalonde_exp_df <- filter(lalonde, exper == 1)
+# fit <- CBPS::CBPS(treat ~ age + educ + re75 + re74 + 
+# 			I(re75==0) + I(re74==0), 
+# 			data = lalonde_exp_df, ATT = TRUE)
+# summary(fit)
+# m.out <- MatchIt::matchit(treat ~ fitted(fit), method = "nearest", 
+# 				 data = lalonde_exp_df, replace = TRUE)
+# lm(re78 ~ treat + age + educ + re75 + re74, MatchIt::match.data(m.out), weights = weights) %>%
+#   tidy()
+# 
+# 
+# lalonde_psid_df <- filter(lalonde, (exper == 1 & treat == 1) | exper == 0)
+# fit <- CBPS::CBPS(treat ~ age + educ + re75 + re74 + 
+# 			I(re75==0) + I(re74==0), 
+# 			data = lalonde_psid_df, ATT = TRUE)
+# m.out <- MatchIt::matchit(treat ~ fitted(fit), method = "nearest", 
+# 				 data = lalonde_psid_df, replace = TRUE)
+# lm(re78 ~ treat + age + educ + re75 + re74, MatchIt::match.data(m.out), weights = weights) %>%
+#   tidy()
+```
 
 
 
