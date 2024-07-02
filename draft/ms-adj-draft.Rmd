@@ -4,7 +4,8 @@ output:
     # reference_docx: "word-template.docx"
   bookdown::pdf_document2:
     toc: no
-    number_sections: yes
+    keep_tex: true
+    number_sections: no
     pandoc_args: !expr rmdfiltr::add_wordcount_filter(rmdfiltr::add_citeproc_filter(args = NULL))
     #latex_engine: xelatex
 always_allow_html: true
@@ -29,7 +30,7 @@ editor_options:
 
 citeproc: no
 #fontfamily: mathpazo
-#fontsize: 11pt
+# fontsize: 12pt
 # geometry: margin=.6in
 indent: yes
 link-citations: yes
@@ -46,13 +47,15 @@ title: "Double Robust, Flexible Adjustment Methods for Causal Inference: An Over
 author:  Nathan I. Hoffmann, Departments of Sociology and Statistics, UCLA
 date: "`r format(Sys.time(), '%B %e, %Y')`"
 
+thanks: "I deeply thank  my committee -- Chad Hazlett, Onyebuchi A. Arah, Jennie E. Brand -- for their extensive suggestions and advice on previous drafts. I would also like to thank the members of UCLA's Practical Causal Inference Lab, UCLA's Social Inequality Data Science Lab, participants of the 2023 American Sociological Association's Annual Meeting, and participants of the 2024 All-UC Demography Conference for their feedback on previous versions of this paper."
+
 abstract: "Double robust methods for flexible covariate adjustment in causal inference have proliferated in recent years. Despite their apparent advantages, these methods remain underutilized by social scientists. It is also unclear whether these methods actually outperform more traditional methods in finite samples. This paper has two aims: It is a guide to some of the latest methods in double robust, flexible covariate adjustment for causal inference, and it compares these methods to more traditional statistical methods and flexible \"single robust\" methods. It does this by using both simulated data where the treatment effect estimate is known, and then using comparisons of experimental and observational data from the National Supported Work Demonstration. Methods covered include Augmented Inverse Probability Weighting (AIPW), Targeted Maximum Likelihood Estimation (TMLE), and Double/Debiased Machine Learning (DML). Results suggest that some of these methods do outperform traditional methods in a wide range of simulations, but only slightly. In particular, the top performers are TMLE and AIPW in conjunction with flexible machine learning algorithms. But G-computation with the same flexible machine learning algorithms obtains almost identical results, and simple regression methods are nearly comparable in bias and are much more computationally efficient."
 
 ---
 
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = F, warning = F, message = F, cache = T)
+knitr::opts_chunk$set(echo = F, warning = F, message = F, cache = T, dev = c('pdf', 'png'), fig.retina = 3)
 options("yaml.eval.expr" = TRUE)
 
 library(SuperLearner)
@@ -361,7 +364,8 @@ tmle_calc <- function(mu1_pred, mu0_pred, pi_pred, d, y){
   H0 = (1-d)/(1-pi_pred)
   H1 = d/pi_pred
 
-  epsilon <- glm(y ~ -1 + H0 + H1 + offset(qlogis((d==1)*mu1_pred + (d==0)*mu0_pred)),
+  epsilon <- glm(y ~ -1 + H0 + H1 + offset(qlogis((d==1)*mu1_pred 
+                    + (d==0)*mu0_pred)),
                  family = binomial(link = 'logit')) %>%
     tidy() %>%
     pull(estimate)
@@ -1080,13 +1084,13 @@ sims <- sims_main %>% append(sims_small) %>% append(sims_large) %>% append(sims_
 
 # Introduction
 
-In causal inference, misspecification of underlying models can bias estimates of treatment effects [@hernan_2020_causal; @morgan_2015_counterfactuals]. There have been two important developments that attempt to overcome this. First, methodologists have developed machine learning methods that allow greater flexibility in estimation, adjusting for covariates in data-driven, complex ways [@balzer_2021_invited; @brand_2023_recent]. The second development is double robust methods [@bang_2005_doubly; @kang_2007_demystifying], which estimate two models: one for treatment exposure and another for the outcome. These models are robust to misspecification of either one of these models.  
+In causal inference, functional form misspecification of underlying models can bias estimates of treatment effects [@hernan_2020_causal; @morgan_2015_counterfactuals]. There have been two important developments that attempt to overcome this. First, methodologists have developed machine learning methods that allow greater flexibility in estimation, adjusting for covariates in data-driven, complex ways [@balzer_2021_invited; @brand_2023_recent]. The second development is double robust methods [@bang_2005_doubly; @kang_2007_demystifying], which estimate two models: one for treatment exposure and another for the outcome. These models are robust to misspecification of either one of these "nuisance" models.  
 
-A number methods unifying these two developments have proliferated. These double robust methods for flexible covariate adjustment use machine learning methods to adapatively model the data generating processes. These models purportedly overcome the shortcomings of both traditional statistical methods and machine learning methods. Common statistical methods -- such as OLS regression and matching on propensity scores estimated from logistic regression -- have rigid functional form assumptions and fail to calculate stable estimates when the number of covariates is large relative to the number of observations. Machine learning methods, on the other hand, are often difficult to interpret. They can also suffer from overfitting, where the flexibility of the model becomes a weakness and predictions out-of-sample are poor, yet efforts to correct for overfitting can introduce regularization bias [@hastie_2009_elements]. Double robust methods with machine learning dispose of the constricting functional form assumptions of common statistical methods, and they correct for the regularization bias of flexible machine learning methods. They can also accommodate large numbers of covariates and produce easily interpretable treatment effect estimates. Despite their apparent advantages, these methods remain rarely utilized by social scientists. Part of the barrier has been lack of familiarity with these methods. It has also been unclear how these methods compare, or whether such methods actually perform better than traditional methods in finite samples.  
+A number methods unifying these two developments have proliferated. These double robust methods for flexible covariate adjustment use machine learning methods to adapatively model the data generating processes at play. These models purportedly overcome the shortcomings of both traditional statistical methods and machine learning methods. Common statistical methods -- such as OLS regression and matching on propensity scores estimated from logistic regression -- have rigid functional form assumptions and fail to calculate stable estimates when the number of covariates is large relative to the number of observations. Machine learning methods, on the other hand, are often difficult to interpret. They can also suffer from overfitting, where the flexibility of the model becomes a weakness and predictions out-of-sample are poor, yet efforts to correct for overfitting can introduce regularization bias [@hastie_2009_elements]. Double robust methods with machine learning dispose of the constricting functional form assumptions of common statistical methods, and they correct for the regularization bias of flexible machine learning methods. They can also accommodate large numbers of covariates and produce easily interpretable treatment effect estimates. Despite their apparent advantages, these methods remain rarely utilized by social scientists. Part of the barrier has been lack of familiarity with these methods. It has also been unclear how these methods compare, or whether such methods actually perform better than traditional methods in finite samples.  
 
 This paper makes advances on these fronts. First, it is a guide to some of the latest methods in double robust, flexible covariate adjustment for causal inference, explaining the methods to a social scientist audience. Methods covered include Augmented Inverse Probability Weighting (AIPW), Targeted Maximum Likelihood Estimation (TMLE), and Double or Debiased Machine Learning (DML). This paper reviews the theory behind these methods as well as simple R implementations. 
 
-Second, this paper evaluates these methods. They are tested on simulations from @dorie_2019_automated, which cover a range of data-generating processes where ignorability holds -- i.e., there are no unmeasured confounders. They are then used to estimate experimental and observational effects from real-world data, the National Support for Work Demonstration (NSW) originally analyzed by @lalonde_1986_evaluating. In these evaluations, double robust methods are compared to "single robust" single robust methods. These include traditional or simpler statistical methods commonly used by social scientists: ordinary least squares (OLS) regression, matching on propensity scores estimated from logistic regression (PSM), and inverse probability weighting (IPW). They are also compared to two more flexible methods that may overcome the misspecification issues that double robust methods aim to overcome: G-computation and the Lin estimator [@lin_2013_agnostic].  
+Second, this paper evaluates these methods. They are tested on simulations from @dorie_2019_automated, which cover a range of data-generating processes where ignorability holds -- i.e., there are no unmeasured confounders. They are then used to estimate experimental and observational effects from real-world data, the National Support for Work Demonstration (NSW) originally analyzed by @lalonde_1986_evaluating. In these evaluations, double robust methods are compared to "single robust" methods (i.e., ones with one nuisance model). These include traditional or simpler statistical methods commonly used by social scientists: ordinary least squares (OLS) regression, matching on propensity scores estimated from logistic regression (PSM), and inverse probability weighting (IPW). They are also compared to two more flexible methods that may overcome the misspecification issues that double robust methods aim to overcome: G-computation and the Lin estimator [@lin_2013_agnostic].  
 
 Results from simulations where ignorability holds show that some double robust methods outperform traditional statistical methods, but only slightly. AIPW and TMLE perform the best, at least when used in conjunction with flexible machine learning algorithms, while DML does slightly worse than traditional methods. G-computation with flexible machine learning performs as well as the lowest-error double robust methods. Despite their lower average error, the computation times of these flexible methods are high. With its still relatively low error and much faster computation time, OLS remains a sensible choice as an estimator, and the Lin estimator -- which is as quick as standard OLS regression -- performs only slightly worse than the best double robust methods.  
 
@@ -1098,13 +1102,13 @@ Results from the NSW study highlight the importance of ignorability. When observ
 
 ## Literature Review
 
-Although previous work has compared different methods for covariate adjustment, there has not yet been a thorough evaluation and comparison of the recent and popular double robust methods of AIPW, TMLE, and DML for a social scientist audience. 
+Although previous work has compared different methods for covariate adjustment, there has not yet been a thorough comparison and evaluation of the recent and popular double robust methods of AIPW, TMLE, and DML for a social scientist audience. 
 
-Although some introductions to double robust methods exist, they do not discuss them in the context of covariate adjustment for causal inference, or their treatment is overly technical for a social scientist audience. For example, @kang_2007_demystifying provide an an excellent overview and evaluation of double robust methods, but in the context of missing data, and the authors consider AIPW but not TMLE or DML.  @bang_2005_doubly introduce double robust models for both causal inference and missing data, but their treatment is rather technical, and they only discuss AIPW.  
+Although some introductions to double robust methods exist, they do not discuss them in the context of covariate adjustment for causal inference, or their treatment is overly technical for a social scientist audience. For example, @kang_2007_demystifying provide an an excellent overview and evaluation of double robust methods, but in the context of missing data, and the authors consider AIPW but not TMLE or DML. @bang_2005_doubly introduce double robust models for both causal inference and missing data, but their treatment is rather technical, and they only discuss AIPW. @lundberg_2022_researcher provide brief schematic overviews of double robust methods for a social scientist audience, but they do not evaluate these methods.
 
-Evaluations of double robust methods have focused on only one double robust method and compare to few traditional statistical methods. @dorie_2019_automated compare estimations from a number of different flexible methods, but these do not include AIPW or DML. @chatton_2020_gcomputation compare four methods -- G-computation, IPW, full matching, and TMLE -- but authors only consider one double robust method, and their focus is on omitted variable bias rather than determining which method is the most useful. @cousineau_2022_estimating evaluates the performance of optimization-based methods for causal inference, but these do not include the double robust methods covered in the current paper. @knaus_2022_double reviews double robust methods in an econometrics setting but does not compare them to traditional statistical methods for covariate adjustment.  
+Existing evaluations of double robust methods have focused on only one double robust method and compared it to few traditional statistical methods. @dorie_2019_automated compare estimations from a number of different flexible methods, but these do not include AIPW or DML. @chatton_2020_gcomputation compare four methods -- G-computation, IPW, full matching, and TMLE -- but authors only consider one double robust method, and their focus is on omitted variable bias rather than determining which method is the most useful. @cousineau_2022_estimating evaluates the performance of optimization-based methods for causal inference, but these do not include the double robust methods covered in the current paper. @knaus_2022_double reviews DML-based methods in an econometrics setting but does not compare them to traditional statistical methods for covariate adjustment.  
 
-An evaluation of multiple double robust methods that compares them to traditional statistical methods as well as flexible "single robust" methods is needed to understand just how practically useful these methods are for a social science audience. This paper endeavors to do this and to provide a gentle introduction to these methods.  
+An evaluation of multiple double robust methods that compares them to traditional statistical methods as well as flexible "single robust" methods is needed to understand just how practically useful these methods are for a social science audience. This paper does this as well as provides a gentle introduction to these methods.  
 
 
 ## Historical Overview 
@@ -1120,11 +1124,11 @@ There are also links between double robust methods and matching with regression 
 Today, double robust methods abound [e.g. @arkhangelsky_2021_doublerobust; @ratkovic_2023_relaxing; @sloczynski_2018_general; @dukes_2022_doubly; @kennedy_2023_semiparametric]. Although double robust methods exist for instrumental variables [@okui_2012_doubly; @wang_2018_bounded], difference-in-differences [@santanna_2020_doubly], longitudinal data [@yu_2006_double; @tran_2019_double], and other causal applications, this paper focuses on three of the most popular and foundational methods for covariate adjustment in a cross-sectional setting.
 
 ## Aims of Double Robust Methods
-Double robust methods for covariate adjustment aim to overcome what many consider to be the shortcomings of both traditional statistical methods and flexible machine learning methods. Statistical methods that are popular with social scientists -- such as OLS regression and matching on propensity scores from logistic regression -- have two main weaknesses that double robust methods address. First, they assume simple (linear or transformed linear) functional forms. In the presence of highly nonlinear data generating processes, they may provide biased estimates. Second, these methods cannot handle large numbers of covariates relative to sample size. While some machine learning methods can produce estimates even when the number of covariates exceeds the number of observations (such as lasso), OLS fails in this case due to the $X^\top X$ matrix not being of full rank and hence not invertible. In cases with many covariates, but not more than the number of observations, estimation is unstable with many traditional statistical methods.  
+Double robust methods for covariate adjustment aim to overcome what many consider to be the shortcomings of both traditional statistical methods and flexible machine learning methods [@diaz_2020_machine]. Statistical methods that are popular with social scientists -- such as OLS regression and matching on propensity scores from logistic regression -- have two main weaknesses that double robust methods address. First, they assume simple (linear or transformed linear) functional forms. In the presence of highly nonlinear data generating processes, they may provide biased estimates. Second, these methods cannot handle large numbers of covariates relative to sample size, i.e. sparsity. While some machine learning methods can produce estimates even when the number of covariates exceeds the number of observations (such as lasso), OLS fails in this case due to the $X^\top X$ matrix not being of full rank and hence not invertible. In cases with many covariates, but not more than the number of observations, estimation is unstable with many traditional statistical methods.  
 
-Flexible machine learning methods also have their drawbacks. First, naive application of these methods can result in overfitting, with predictive accuracy maximized in sample but treatment effect estimation being biased. Furthermore, results of these machine learning methods can be difficult to interpret without further processing. Machine learning methods have often been developed with a focus on prediction rather than on producing treatment effect point estimates.  
+Flexible machine learning methods also have their drawbacks. First, naive application of these methods can result in overfitting, with predictive accuracy maximized in sample but treatment effect estimation being biased. When regularization is used to correct for overfitting, "regularization bias" can result. Furthermore, results of these machine learning methods can be difficult to interpret without further processing. Machine learning methods have often been developed with a focus on prediction rather than on producing treatment effect point estimates.  
 
-Double robust methods attempt to overcome the downsides of both traditional and machine learning methods by incorporating flexible models into a framework that avoids overfitting and provides easily interpretable estimates. These methods are also motivated by the idea that many older methods ignore information present in the data. Methods tend to model either the outcome -- as in OLS regression and G-computation -- or only the treatment assignment -- as in propensity score matching or inverse probability weighting. Double robust methods, on the other hand, model both of these.  
+Double robust methods attempt to overcome the downsides of both traditional and machine learning methods by incorporating flexible models into a framework that avoids overfitting and regularization bias and provides easily interpretable estimates. These methods are also motivated by the idea that many older methods ignore information present in the data. Methods tend to model either only the outcome -- as in OLS regression and G-computation -- or only the treatment assignment -- as in propensity score matching or inverse probability weighting. Double robust methods, on the other hand, model both of these.  
 
 
 # Conceptual Overview
@@ -1142,10 +1146,10 @@ and an *exposure model* (or treatment or propensity score model):
 where $\mu_d(\cdot)$ is a model of the outcome, $D_i = d_i \in \{0, 1\}$ is the treatment assignment (where 0 is control and 1 is treated), $X_i$ is a vector of covariates for unit $i = 1, \ldots, N$, $Y_i$ is the outcome, and $\pi(\cdot)$ is a model of the exposure. The covariates included in $X_i$ can be different for the two models.  
 
 The focus of this paper is on the average treatment effect (ATE), which under the potential outcomes framework [@rubin_1974_estimating] is defined as
-$$\tau = E[Y_i(1) - Y_i(0)]$$
+$$\tau = E[Y_i(1) - Y_i(0)],$$
 where $Y_i(1)$ and $Y_i(0)$ are the potential outcomes of $Y_i$ under treatment and control, respectively. An estimator is called "double robust" if it achieves consistent estimation of the ATE (or whatever estimand the researcher is interested in) as long as *at least one* of Equations \@ref(eq:outcome) or \@ref(eq:exposure) is consistently estimated. This means that the outcome model can be completely misspecified, but as long as the exposure model is correct, our estimation of the ATE will be consistent. This also means that the exposure model can be completely wrong, as along as the outcome model is correct.  
 
-It is important to consider what is meant by a "correct" model [@keil_2018_resolving]. These estimators are robust from a statistical standpoint, but not necessarily a causal identification one. The researcher must know which variables are possible confounders and to include them in the appropriate models, while not including colliders or mediators [@hunermund_2023_double]. The simulations discussed in this paper assume conditional ignorability; rather than testing what happens when models are missing important covariates, it focuses on accurate specification of the functional form of the treatment and outcome models.    
+It is important to consider what is meant by a "correct" model specification [@keil_2018_resolving]. These estimators are robust from a statistical standpoint, but not necessarily a causal identification one. The researcher must know which variables are possible confounders and to include them in the appropriate models, while not including colliders or mediators [@hunermund_2023_double]. The simulations discussed in this paper assume conditional ignorability; rather than testing what happens when models are missing important covariates, it focuses on accurate specification of the functional form of the treatment and outcome models.    
 
 
 ## Assumptions
@@ -1218,7 +1222,7 @@ $$\begin{aligned}
 
 ## Targeted Maximum Likelihood Estimation (TMLE)
 
-Extending and improving previous double robust methods, @vanderlaan_2006_targeted first proposed TMLE using a parametric framework and the efficient influence curve [@hines_2022_demystifying] to obtain estimates and standard errors. Mark van der Laan has gone on to collaborate on both a gentle introduction [@gruber_2009_targeted], a textbook [@vanderlaan_2011_targeted], and an R package [@gruber_2012_tmle] for implementing the method. @schuler_2017_targeted and @luque-fernandez_2018_targeted provide introductions for epidemiologists.
+Extending and improving previous double robust methods, @vanderlaan_2006_targeted first proposed TMLE using a parametric framework and the efficient influence curve [@hines_2022_demystifying] to obtain estimates and standard errors. Mark van der Laan has gone on to collaborate on both a gentle introduction [@gruber_2009_targeted], two textbooks [@vanderlaan_2011_targeted; @vanderlaan_2018_targeted], and an R package [@gruber_2012_tmle] for implementing the method. @schuler_2017_targeted and @luque-fernandez_2018_targeted provide introductions for epidemiologists.
 
 TMLE begins by estimating the relevant part of the data-generating distribution $P(Y)$, i.e. the conditional density $Q = P(Y \mid X)$. It next estimates the exposure model. Although any estimation method can be used for these steps, the originators of the method suggest using a "SuperLearner," i.e. ensemble learning with cross-validation [@vanderlaan_2007_super]. Next, the exposure model is used to calculate a "clever covariate," which is similar to an IPW. The coefficient for this clever covariate is estimated using maximum likelihood -- whence the "MLE" in "TMLE." Finally, the estimate of $Q$ is updated in a function involving the clever covariate. This process can be iterated, but usually one iteration is enough. The estimate of the distribution $Q$ can be used to calculate the estimand of interest.  
 
@@ -1286,18 +1290,18 @@ The most recently developed of the methods reviewed here, DML was proposed in an
 
 DML is motivated by the need to handle problems with high-dimensional nuisance parameters, i.e. a large number of measured confounders. Flexible machine learning is appropriate for this task, but such methods suffer from regularization bias, where efforts to control the overfitting of models can bias estimates. DML removes this bias in a two-step procedure. First, it solves the auxiliary problem of estimating the treatment exposure model $E(D \mid X) = \pi(X)$. It then uses this model to remove bias: Neyman orthogonalization allows the creation of an orthogonalized regressor, essentially partialing out the effect of covariates $X$ from treatment $D$. The debiased $D$ is then used to estimate the conditional mean of the outcome $E(Y \mid X) = \mu(X)$, which can be used to calculate the estimand of interest.  
 
-More formally, suppose we want to estimate $\tau$ in the following framework:
+More formally, suppose we want to estimate $\tau$ in the following framework:^[Note that this basic DML setup assumes a partially linear model and targets the ATE. If we are interested in the CATE and heterogeneous effects, Chernozhukov et al. [-@chernozhukov_2018_double, p. C35] present an alternative score function that closely resembles AIPW. See also @jacob_2021_cate and @nie_2021_quasioracle.]
 $$y_i = \tau d_i + g_0(\mathbf x_i) + u_i,$$
 $$d_i = m_0(\mathbf x_i) + v_i.$$
 
-The idea is to estimate $g_0$ and $m_0$ separately, then use residual-on-residual regression to obtain an estimate of $\tau$, which we can designate $\hat \tau$. However this leaves a term in the asymptotic distribution of $\hat \tau$ that biases the estimate. To avoid this, DML uses sample splitting [@angrist_1995_splitsample].  
+The idea is to estimate $g_0$ and $m_0$ separately, then use an orthogonalized or debiased score function -- here, residual-on-residual regression -- to obtain an estimate of $\tau$, which we can designate $\hat \tau$. However, this leaves a term in the asymptotic distribution of $\hat \tau$ that biases the estimate. To avoid this, DML uses sample splitting [@angrist_1995_splitsample].  
 
-We randomly split the sample of $n$ observations into two sets, $I$ and $I^c$, each of size $n/2$. Using any prediction algorithm, we then estimate the response and treatment models using only set $I^c$:  
+We randomly split the sample of $n$ observations into two sets, $I$ and $I^c$, each of size $n/2$.^[In practice, we can split the sample into any number of folds, and more than two sets might be better.] Using any prediction algorithm, we then estimate the response and treatment models using only set $I^c$:  
 
 1) Estimate treatment model $\hat m_0$ in the equation $d_i = \hat m_0(\mathbf x_i) + \hat v_i, \forall i \in I^c$.  
 2) Estimate the outcome model $\hat g_0$ in the equation $y_i =  \hat g_0(\mathbf x_i) + \hat u_i, \forall i \in I^c$.
 
-Note that the estimation of the outcome does not consider treatment assignment $d_i$. This is a key difference between DML and AIPW or TMLE.  
+<!-- Note that, in this setup, the estimation of the outcome does not consider treatment assignment $d_i$. This is a key difference between DML and AIPW or TMLE.   -->
 
 Next, we use the estimated models to perform residual-on-residual regression *on the left out set* $I$ to obtain an estimate of $\tau$:
 $$\hat \tau(I^c, I) = \left(\sum_{i \in I} \hat v_i d_i \right)^{-1} 
@@ -1429,7 +1433,28 @@ This demonstration shows that this estimator achieves double robustness: The est
 
 These double robust methods have many similarities. How do the results they give compare? This section tests the performance of each in practice using two strategies. First, results are compared using simulated data from a causal inference competition [@dorie_2019_automated]. The true treatment effect is known and all potential confounders are observed, so these simulations allow assessment of bias and related quantities. Second, these methods are applied to data from LaLonde's [-@lalonde_1986_evaluating] study of the National Supported Work Demonstration (NSW). The NSW randomly provided training to disadvantaged workers, allowing an experimental estimate of the effect of the intervention, and data assembled by @dehejia_1999_causal compares these experimental estimates to observational ones.  
 
-The three double robust methods are compared to two sets of traditional or "single robust" methods used as benchmarks. By "single robust," I mean methods that are not robust to any misspecification. First are one-model methods. The most classic method considered -- linear regression -- models only the response surface. It is estimated using ordinary least squares regression ("OLS"), entering each variable separately without any interactions or higher-order terms. Two other one-model methods model only the treatment assignment mechanism. In propensity score matching (PSM), propensity scores are estimated from logistic regression with each variable entered separately and without any higher order terms, then matched using the `MatchIt` package. Finally, stabilized inverse probability weights [IPW, @austin_2015_moving, p. 3663] are used for weighted OLS regression. These IPWs are estimated using propensity scores estimated by each of the three under-the-hood estimation techniques described below; extreme propensity scores are truncated so that they range from 0.01 to 0.99.  
+```{r methods-overview}
+
+read_csv(here('files/methods.csv')) %>%
+  huxtable::hux() %>%
+  huxtable::theme_article() %>%
+  huxtable::set_width(1) %>%
+  # huxtable::set_all_padding(0) %>%
+  # huxtable::set_latex_float('h!') %>%
+  huxtable::set_caption('Double and single robust methods used for evaluation')
+  
+  # pander::pander(split.cell = 15, split.table = Inf, 
+  #                justify = 'left',
+  #                caption = 'Double and single robust methods used for evaluation',
+  #                label = 'methods-overview') 
+  # kable(booktabs = T, linesep = '', caption = 'Double and single robust methods used for evaluation') %>%
+  # kable_styling(latex_options = c("hold_position"))
+
+
+```
+
+
+The three double robust methods are compared to two sets of traditional or "single robust" methods used as benchmarks (see Table \@ref(tab:methods-overview) for an overview of all methods used). By "single robust," I mean methods that are not robust to any misspecification. First are one-model methods. The most classic method considered -- linear regression -- models only the response surface. It is estimated using ordinary least squares regression ("OLS"), entering each variable separately without any interactions or higher-order terms. Two other one-model methods model only the treatment assignment mechanism. In propensity score matching (PSM), propensity scores are estimated from logistic regression with each variable entered separately and without any higher order terms, then matched using the `MatchIt` package. Finally, stabilized inverse probability weights [IPW, @austin_2015_moving, p. 3663] are used for weighted OLS regression. These IPWs are estimated using propensity scores estimated by each of the three under-the-hood estimation techniques described below; extreme propensity scores are truncated so that they range from 0.01 to 0.99.  
 
 The second set of single robust methods are two-model methods, which estimate separate models for treated and untreated units. In theory these could solve the misspecification problem that double robust methods are meant to solve, but they could still suffer from overfitting. G-computation [@robins_1986_new; @snowden_2011_implementation] uses some estimation technique to predict outcomes under treatment and control for each unit in the dataset. The ATE estimate is the difference in the average prediction under treatment and the average prediction under control. The second two-model method is the Lin estimator [@lin_2013_agnostic]. This method aims to solve issues with the bias induced by OLS regression in a randomization framework by interacting the treatment indicator with mean-centered covariates. @hazlett_2024_understanding show that this method is equivalent to estimating two separate OLS regression models for the treated and control units.  
 
@@ -2268,6 +2293,7 @@ sim_results %>%
   theme(axis.text.x=element_text(angle=90, hjust=0.95,vjust=0.2),
         legend.position = 'none') 
   
+ggsave(here('draft/figures', 'dorie-results-bias.png'), width = 7,  height = 5.5, dpi = 600)
 ```
 
 ```{r dorie-results-rmse, fig.cap = 'Root mean squared error and bias for Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 10 replications each. Values greater in absolute value than 4 are plotted at 4 and labeled with their actual value.'}
@@ -2299,7 +2325,7 @@ sim_results_plot %>%
   #scale_y_continuous(trans=ggallin::pseudolog10_trans)
   ylim(c(-4, 4))
 
-
+ggsave(here('draft/figures', 'dorie-results-rmse.png'), width = 7,  height = 5.5, dpi = 600)
 ```
 
 ## Linear DGPs
@@ -2331,6 +2357,8 @@ sim_results %>%
   # scale_x_discrete(labels=function(x){sub(", ", "\n", x)}) +
   theme(axis.text.x=element_text(angle=90, hjust=0.95,vjust=0.2),
         legend.position = 'none') 
+
+ggsave(here('draft/figures', 'dorie-linear-bias.png'), width = 7,  height = 5.5, dpi = 600)
 ```
 
 
@@ -2362,6 +2390,8 @@ sim_results_plot %>%
   #scale_x_discrete(labels=function(x){sub(", ", "\n", x)}) +
   #scale_y_continuous(trans=ggallin::pseudolog10_trans)
   ylim(c(-4, 4))
+
+ggsave(here('draft/figures', 'dorie-linear-rmse.png'), width = 7,  height = 5.5, dpi = 600)
 ```
 
 ## Do results vary by DGP?
@@ -2510,7 +2540,7 @@ bind_rows(dgp_list) %>%
 ```
 
 
-While the AIPW, TMLE, and G-computation with a SuperLearner may be the top performing methods overall, this does not mean that there are some data-generating processes (DGPs) where some other method may do better. Across the the 20 datasets, @dorie_2019_automated vary six DGP characteristics: degree of nonlinearity, the percentage treated, overlap for the treatment group, alignment (correspondence in variables used to generate the exposure and response models), and treatment effect heterogeneity. To test how the methods perform across different values of these characteristics, I begin with the 200 simulations from the 20 datasets used in the main results (Figures \@ref(fig:dorie-results-bias) and \@ref(fig:dorie-results-rmse), Table \@ref(tab:dorie-results-table)). I limit datasets to those generated by a particular value of a DGP characteristic, and I then calculate RMSE for each method for only these datasets. For example, alignment is 0 for datasets 8 and 16 (meaning there is 0 correlation between the terms included in the treatment and outcome models), so for this value of the DGP RMSE is calculated only for those two datasets.  
+While the AIPW, TMLE, and G-computation with a SuperLearner may be the top performing methods overall, this does not mean that there are some data-generating processes (DGPs) where some other method may do better. Across the the 20 datasets, @dorie_2019_automated vary five DGP characteristics: degree of nonlinearity, the percentage treated, overlap for the treatment group, alignment (correspondence in variables used to generate the exposure and response models), and treatment effect heterogeneity. To test how the methods perform across different values of these characteristics, I begin with the 200 simulations from the 20 datasets used in the main results (Figures \@ref(fig:dorie-results-bias) and \@ref(fig:dorie-results-rmse), Table \@ref(tab:dorie-results-table)). I limit datasets to those generated by a particular value of a DGP characteristic, and I then calculate RMSE for each method for only these datasets. For example, alignment is 0 for datasets 8 and 16 (meaning there is 0 correlation between the terms included in the treatment and outcome models), so for this value of the DGP RMSE is calculated only for those two datasets.  
 
 Tables \@ref(tab:dgp) and \@ref(tab:dgp-2) shows the six top-performing methods by lowest RMSE for each each value of the DGP characteristics. Across DGPs, the same methods dominate as in the full range of simulations: the SuperLearner with AIPW, TMLE, and G-compuation. In fact, these three methods take the top three spots for *every* DGP variation in the simulations.  
 
@@ -2707,7 +2737,7 @@ size_plot %>%
   ggrepel::geom_text_repel(aes(label = label_max), nudge_x = 1, na.rm = T, 
                            size = text_size, segment.color = 'transparent') +
   scale_y_continuous(trans='log10', breaks = c(0.1, 0.5, 1, 10, 100)) +
-  theme(legend.position = 'none')
+  theme(legend.position = 'none') 
 ```
 
 
@@ -2722,7 +2752,7 @@ lalonde_results <- sim_results %>%
   filter(str_detect(set, 'lalonde')) %>%
   group_by(set, method_estimator, method, estimator) %>%
   summarize(se = sd(ate),
-            ate = mean(ate)) %>%
+            estimate = mean(ate)) %>%
   ungroup() %>%
   # left_join(select(lalonde_means, estimate = ate, method, estimator, set)) %>%
   separate_wider_delim(set, delim = ' ', names = c('set', 'sample', 'include_74')) %>%
@@ -2751,7 +2781,10 @@ lalonde_results %>%
   labs(x = '', y = '') +
   coord_cartesian(ylim = c(-5000, 5000)) +
   theme(axis.text.x=element_text(angle=90, hjust=0.95,vjust=0.3),
-        legend.position = 'bottom') 
+        legend.position = 'bottom')  +
+  labs(title = 'Results for Lalonde NSW data, with CPS and PSID comparison groups')
+
+ggsave(here('draft/figures', 'lalonde.png'), width = 18,  height = 8, dpi = 1200)
 ```
 
 
@@ -2775,15 +2808,15 @@ These results highlight the importance of selection on observables holding. With
 
 This paper aims to provide an introduction to and evaluation of double robust methods for covariate adjustment in causal inference. By comparing AIPW, TMLE, and DML to more traditional statistical methods such as OLS and PSM as well as flexible "single robust" methods such as G-computation and the Lin estimator, it allows evaluation of whether these methods are worth the effort and (computational) time for social scientists to adopt them.  
 
-Results are nuanced. In the full range of simulated data, AIPW and TMLE with a SuperLearner or GRF are able to obtain smaller RMSE than OLS or PSM. However these differences are quite small, and G-computation with the same flexible machine learning methods performs just as well as the double robust methods. DML does not perform as well as AIPW or TMLE. The Lin estimator performs slightly better than OLS or PSM, without any increase in computation time. Methods relying on logit models to estimate probability weights have the most error; researchers should use these methods with caution.  
+Results are nuanced. In the full range of simulated data, AIPW and TMLE with a SuperLearner or GRF are able to obtain smaller RMSE than OLS or PSM. However these differences are quite small, and G-computation with the same flexible machine learning methods performs just as well as the double robust methods. DML does not perform as well as AIPW or TMLE (however, a version of DML that allows for heterogeneous effects might perform better; see Chernozhukov et al. [-@chernozhukov_2018_double, p. C35]). The Lin estimator performs slightly better than OLS or PSM, without any increase in computation time. Methods relying on logit models to estimate propensity weights have the most error; researchers should use these methods with caution.  
 
 Methods that come out on top in the full range of simulations also tend to do the best regardless of the data generating process, though the Lin estimator and OLS rise in the rankings when the true treatment and outcome models are linear. AIPW, TMLE, and G-computation with a SuperLearner or GRF perform the best, followed closely by the Lin estimator, OLS, and PSM. As sample size varies, the same rank order generally holds, though traditional methods are unable to produce estimates in small samples when there are many covariates, while the double robust methods are able to do so.  
 
 Results from the experimental LaLonde data are more difficult to interpret. The sample appears much more important than the choice of method. In the original LaLonde data, most methods fail to estimate treatment effects in the observational data with the same sign as the experimental estimate. The exception is the PSID-3 sample, which includes only men who were not working in the spring of 1976 or 1975 and is thus more comparable to the individuals were recruited to the NSW study. When 1974 earnings are included as a covariate, many of the methods provide estimates across samples that are close to the experimental estimates. OLS, PSM, G-computation (SuperLearner), AIPW (SuperLearner), TMLE (SuperLearner), and DML (OLS/logit) appear the most reliable, while IPW (logit), IPW (GRF), IPW (SuperLearner), the Lin estimator, and DML (GRF) prove unstable. It is surprising that the Lin estimator provides unstable results in the NSW data, while it is among the lowest-RMSE methods in the simulation study. This highlights the complexity of doing causal inference with observational data where ignorability may not hold.   
 
-This paper has a number of limitations. First, although it considers some of the most popular double robust, machine learning, traditional, and single robust methods, there are many methods that it could not evaluate. Second, although the simulations are meant to cover a wide range of data generating processes, they only consider continuous outcomes and binary treatments; simulations with binary or categorical outcomes and continuous or multi-armed treatments may yield different results. Finally, the simulations in this paper do not consider situations where ignorability does not hold. In particular, it does not evaluate situations where causal identification is misspecified [@keil_2018_resolving]. Future research should assess violations of this and other assumptions underlying these methods.    
+This paper has a number of limitations. First, although it considers some of the most popular double robust, machine learning, traditional, and single robust methods, there are many methods that it could not evaluate, including variations and extensions of the three methods. Second, although the simulations are meant to cover a wide range of data generating processes, they only consider continuous outcomes and binary treatments; simulations with binary or categorical outcomes and continuous or multi-armed treatments may yield different results. Finally, in considering only functional form misspecification, the simulations in this paper do not consider situations where ignorability does not hold. In particular, it does not evaluate situations where causal identification is misspecified [@keil_2018_resolving]. Future research should assess violations of this and other assumptions underlying these methods.    
 
-In conclusion, if researchers want small gains in accuracy, they may opt for AIPW, TMLE, or G-computation with a flexible machine learning algorithm. But these methods are computationally costly, taking over two minutes per dataset of 4,802 observations and 52 covariates, while OLS, PSM, and the Lin estimator each take a fraction of a second. While double robust methods are useful for social scientists to understand, in most applications, OLS or PSM provide similar results. However, in certain circumstances these double robust methods may be a better choice. Especially when paired with a highly flexible estimator like a SuperLearner or GRF, these methods may be slightly more accurate, and they can be useful when the number of covariates is high or even exceeds the number of observations. They can also be useful as a sensitivity check; if researchers obtain similar estimates across traditional and double robust methods, they can be more confident in the reliability of their estimates.  
+In conclusion, if researchers want small gains in accuracy, they may opt for AIPW, TMLE, or G-computation with a flexible machine learning algorithm. But these methods are computationally costly, taking over two minutes per dataset of 4,802 observations and 52 covariates, while OLS, PSM, and the Lin estimator each take a fraction of a second. While double robust methods are useful for social scientists to understand, in most applications, OLS or PSM provide similar results. However, in certain circumstances these double robust methods may be a better choice. Especially when paired with a highly flexible estimator like a SuperLearner or GRF, these methods may be slightly more accurate, and they can be useful when the number of covariates is high or even exceeds the number of observations. In longitudinal settings with time-varying confounders, they may be more useful [@tran_2019_double]. They can also be useful as a sensitivity check; if researchers obtain similar estimates across traditional and double robust methods, they can be more confident in the reliability of their estimates.  
 
 
 
@@ -2953,4 +2986,4 @@ lalonde_results_df %>%
                     # linesep = '',
                     caption = 'Double robust methods: ATE estimates for Lalonde NSW data as provided by Dehejia and Wahba (1999), with CPS and PSID comparison groups. Bootstrap standard errors shown in parentheses. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, not having a high school degree, and having no earnings in 1975. The "With 1974 earnings" estimates additionally include earnings in 1974 as a covariate, along with an indicator for having no earnings in 1974.') %>%
   kable_styling(latex_options = c("hold_position")) 
-```
+`
