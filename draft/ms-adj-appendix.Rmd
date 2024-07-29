@@ -1,0 +1,1449 @@
+---
+output:
+  # bookdown::word_document2:
+    # reference_docx: "word-template.docx"
+  bookdown::pdf_document2:
+    toc: yes
+    keep_tex: true
+    number_sections: yes
+    pandoc_args: !expr rmdfiltr::add_wordcount_filter(rmdfiltr::add_citeproc_filter(args = NULL))
+    #latex_engine: xelatex
+always_allow_html: true
+header-includes:
+  #- \usepackage{setspace}\doublespace
+  # - \usepackage[nolists, fighead, tabhead]{endfloat}
+  # - \usepackage{endnotes}
+  # - \let\footnote=\endnote
+  # - \setlength{\headheight}{14.5pt}
+  # - \setlength{\headheight}{13.6pt}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \lhead{N.I. Hoffmann} 
+  - \rhead{`r format(Sys.time(), '%B %e, %Y')`}
+  - \counterwithin{figure}{section}
+  - \counterwithin{table}{section}
+# - \newcommand{\beginsupplement}{\setcounter{table}{0}  
+# \renewcommand{\thetable}{A\arabic{table}} \setcounter{figure}{0} 
+# \renewcommand{\thefigure}{A\arabic{figure}}}
+
+editor_options: 
+  chunk_output_type: console
+
+
+citeproc: no
+#fontfamily: mathpazo
+# fontsize: 12pt
+# geometry: margin=.6in
+indent: yes
+link-citations: yes
+linkcolor: blue
+lang: 'en-US'
+
+bibliography: "/Users/nathan/Documents/My Library.bib" 
+# bibliography: "My Library.bib"  
+csl: apa.csl
+# csl: american-sociological-association.csl
+
+title: "Online Appendix"
+subtitle: "Double Robust, Flexible Adjustment Methods for Causal Inference: An Overview and an Evaluation"
+
+author:  Nathan I. Hoffmann, Departments of Sociology and Statistics, UCLA
+date: "`r format(Sys.time(), '%B %e, %Y')`"
+
+
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, cache = T, dev = c('pdf', 'png'), fig.retina = 3, ft.latex.float = 'float')
+options("yaml.eval.expr" = TRUE)
+
+library(SuperLearner)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(here)
+library(patchwork)
+library(haven)
+library(tidyverse)
+
+knit_hooks$set(inline = function(x) {
+  prettyNum(x, big.mark=",")
+})
+
+
+options("yaml.eval.expr" = TRUE, scipen = 3, digits = 2)
+
+uclablue = '#2774AE'
+gray = '#808080'
+black = '#000000'
+ucla_palette = c(black, uclablue, gray)
+
+# theme_set(theme_cowplot(font_family = 'Palatino') + 
+theme_set(theme_classic(base_family = 'Palatino') + 
+      theme(legend.title=element_blank(), 
+         panel.grid.major.y = element_line('grey80'),
+         legend.background = element_rect(fill = alpha("white", 0.5))
+         ))
+ggplot <- function(...) ggplot2::ggplot(...) + 
+  scale_color_brewer(palette="Dark2") +
+  scale_fill_brewer(palette="Dark2")
+
+kable <- function(...) knitr::kable(..., format.args = list(big.mark = ","))
+```
+
+
+
+
+```{r load}
+
+
+unemp_func <- function(x){
+  x %>%
+    as.data.frame() %>%
+    mutate(re74_0 = re74 == 0,
+         re75_0 = re75 == 0) 
+}
+
+lalonde_exp <- read_dta(here('data', 'nsw.dta')) %>%
+  as.data.frame() %>%
+  mutate(re75_0 = re75 == 0)
+lalonde_exp_74 <- read_dta(here('data', 'nsw_dw.dta')) %>%
+  unemp_func()
+lalonde_cps1_controls <- read_dta(here('data', 'cps_controls.dta')) %>%
+  unemp_func()
+lalonde_cps3_controls <- read_dta(here('data', 'cps_controls3.dta')) %>%
+  unemp_func()
+lalonde_psid1_controls <- read_dta(here('data', 'psid_controls.dta')) %>%
+  unemp_func()
+lalonde_psid3_controls <- read_dta(here('data', 'psid_controls3.dta')) %>%
+  unemp_func()
+```
+
+```{r functions}
+## Pred functions ####
+ols_logit_pred <- function(y, d, x){
+  if('factor' %in% unlist(lapply(x, class))){
+    x <- fastDummies::dummy_cols(x, remove_first_dummy = T, remove_selected_columns = T) 
+  }
+  
+  mu_mod <- lm(y ~  d + ., data.frame(y, d, x))
+  mu1_pred <- predict(mu_mod, newdata = data.frame(y, d = 1, x))
+  mu0_pred <- predict(mu_mod, newdata = data.frame(y, d = 0, x))
+  
+  pi_mod <- glm(d ~ ., data.frame(y, x), family = binomial(link = 'logit'))
+  pi_pred <- predict(pi_mod, type = 'response')
+  
+  # pi_pred <-case_when(
+  #   pi_pred < .01 ~ .01,
+  #   pi_pred > .99 ~ .99,
+  #   T ~ pi_pred)
+
+  
+  return(
+    list(
+      mu1_pred = mu1_pred, 
+      mu0_pred = mu0_pred, 
+      pi_pred = pi_pred,
+      d = d,
+      y = y
+    ))
+}
+
+
+grf_pred <- function(y, d, x){
+  if('factor' %in% unlist(lapply(x, class))){
+    x <- fastDummies::dummy_cols(x, remove_first_dummy = T, remove_selected_columns = T) 
+  }
+  
+  forest_mu <- grf::regression_forest(X = data.frame(d, x), Y = y, 
+                                 tune.parameters = "all")
+  mu0_pred <- predict(forest_mu, newdata = data.frame(d = 0, x))$predictions
+  mu1_pred <- predict(forest_mu, newdata = data.frame(d = 1, x))$predictions
+  
+  forest_pi <- grf::regression_forest(X = x, Y = d, tune.parameters = "all")
+  pi_pred <- predict(forest_pi, newdata = x)$predictions
+
+  return(
+    list(
+      mu1_pred = mu1_pred, 
+      mu0_pred = mu0_pred, 
+      pi_pred = pi_pred,
+      d = d,
+      y = y
+    ))
+}
+
+superlearner_pred <- function(y, d, x, folds = 5, seed = 158){
+  if('factor' %in% unlist(lapply(x, class))){
+    x <- fastDummies::dummy_cols(x, remove_first_dummy = T, remove_selected_columns = T) 
+  }
+  
+  set.seed(seed)
+  mu_fit <- SuperLearner(
+    Y = y,
+    X = data.frame(d, x),
+    cvControl = list(V = folds),
+    SL.library=c("SL.glm", 
+                 "SL.glmnet", 
+                 "SL.xgboost"),
+    method="method.CC_nloglik", 
+    family= gaussian()
+  )
+  
+  pi_fit <- SuperLearner(
+    Y = d,
+    X = x,
+    cvControl = list(V = folds),
+    SL.library=c("SL.glm", 
+                 "SL.glmnet", 
+                 "SL.xgboost"),
+    method="method.CC_nloglik", 
+    family= binomial()
+  )
+  
+
+  return(list(
+    mu0_pred = as.numeric(predict(mu_fit, newdata = data.frame(d = 0, x), type = 'response')$library.predict %*% mu_fit$coef),
+    mu1_pred = as.numeric(predict(mu_fit, newdata = data.frame(d = 1, x), type = 'response')$library.predict %*% mu_fit$coef),
+    pi_pred = as.numeric(predict(pi_fit, type = 'response')$pred),
+    d = d,
+    y = y))
+}
+
+## Methods ####
+
+lm_sim <- function(dat){
+  
+  n <- length(dat)
+  lm_list <- list()
+  for(i in 1:n){
+    start_time <- Sys.time()
+    
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x)
+    
+    ate <- NA
+    tryCatch({
+      lm_out <- tidy(lm(y ~ d + ., sim_dat))
+      ate <- lm_out[[2,2]]
+      
+      }, error=function(e){
+        cat("ERROR :",conditionMessage(e), "\n")
+        })
+    
+    lm_list[[i]] <- data.frame(dataset = i,
+                               ate = ate,
+                               #se = lm_out[[2,3]],
+                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0),
+                               dorie_dataset = dat[[i]]$dataset,
+                               set = dat[[i]]$set,
+                               size = dat[[i]]$size,
+                               comp_time = as.numeric(difftime(Sys.time(), start_time, units = 'secs')))
+    
+  }
+  
+  # fail_count <- sum(sapply(lm_list, function(x) is.null(x)))
+  # # in case last few are errors
+  # fail_count <- ifelse(length(lm_list) == n, fail_count, fail_count + (n - length(lm_list)))
+  
+  # end_time <- Sys.time()
+  
+  return(bind_rows(lm_list))
+  
+  # return(list(
+  #   est_df = bind_rows(lm_list)
+  #   fail_count = fail_count,
+  #   comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+  #   ))
+}
+
+
+psm_sim <- function(dat){
+  
+  n <- length(dat)
+  psm_list <- list()
+  for(i in 1:n){
+    print(paste0(i, ' out of ', n))
+    
+    start_time <- Sys.time()
+    
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x)
+    
+    ate <- NA
+    
+    tryCatch({
+      form <- as.formula(paste0('d ~ ', paste(names(dat[[i]]$x), collapse = '+')))
+      match_out <- MatchIt::matchit(form,
+                             data = sim_dat,
+                             method = 'nearest',
+                             distance = 'glm') 
+      
+      # match_data <- MatchIt::match.data(match_out) 
+      # apply(match_data, 1, unique)
+      form2 <- as.formula(paste0('y ~ d + ', paste(names(dat[[i]]$x), collapse = '+')))
+      
+    
+      psm_out <- lm(form2, 
+                    MatchIt::match.data(match_out), 
+                    weights = weights) %>%
+        tidy()
+      
+      ate <- psm_out[[2,2]]
+        
+  }, error=function(e){
+    cat("ERROR :",conditionMessage(e), "\n")
+    })
+    
+    psm_list[[i]] <- data.frame(dataset = i,
+                                ate = ate,
+                                # se = psm_out[[2,3]],
+                                truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0),
+                                dorie_dataset = dat[[i]]$dataset,
+                                set = dat[[i]]$set,
+                                size = dat[[i]]$size,
+                                comp_time = as.numeric(difftime(Sys.time(), start_time, units = 'secs')))
+  }
+  
+  # fail_count <- sum(sapply(psm_list, function(x) is.null(x)))
+  # # in case last few are errors
+  # fail_count <- ifelse(length(psm_list) == n, fail_count, fail_count + (n - length(psm_list)))
+  
+  # end_time <- Sys.time()
+  
+  return(bind_rows(psm_list))
+  
+  # return(list(
+  #   est_df = bind_rows(psm_list),
+  #   fail_count = fail_count,
+  #   comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+  # )
+}
+
+
+aipw_calc <- function(mu1_pred, mu0_pred, pi_pred, d, y){
+  n <- length(mu1_pred)
+  
+  y1_pred <- (d*(y-mu1_pred))/pi_pred + mu1_pred
+  y0_pred <- ((1-d)*(y-mu0_pred))/(1-pi_pred) + mu0_pred
+  
+  ate <- (1/n)*(sum(y1_pred)) - (1/n)*sum(y0_pred)
+  
+  return(ate)
+}
+
+aipw_calc_trunc <- function(mu1_pred, mu0_pred, pi_pred, d, y){
+  n <- length(mu1_pred)
+  
+  # pi_pred <- case_when(
+  #   pi_pred < quantile(pi_pred, .025) ~ quantile(pi_pred, .025),
+  #   pi_pred > quantile(pi_pred, .975) ~ quantile(pi_pred, .975),
+  #   T ~ pi_pred)
+  
+  pi_pred <- case_when(
+    pi_pred < .01 ~ .01,
+    pi_pred > .99 ~ .99,
+    T ~ pi_pred)
+  
+  y1_pred <- (d*(y-mu1_pred))/pi_pred + mu1_pred
+  y0_pred <- ((1-d)*(y-mu0_pred))/(1-pi_pred) + mu0_pred
+  
+  ate <- (1/n)*(sum(y1_pred)) - (1/n)*sum(y0_pred)
+  
+  return(ate)
+}
+
+
+tmle_calc <- function(mu1_pred, mu0_pred, pi_pred, d, y){
+  n <- length(y)
+  # H <- (d == 1)/pi_pred - (d==0)/(1-pi_pred)
+  H0 = (1-d)/(1-pi_pred)
+  H1 = d/pi_pred
+
+  epsilon <- glm(y ~ -1 + H0 + H1 + offset(qlogis((d==1)*mu1_pred 
+                    + (d==0)*mu0_pred)),
+                 family = binomial(link = 'logit')) %>%
+    tidy() %>%
+    pull(estimate)
+  
+  H_0 = (1-d)/(1-pi_pred)
+  H_1 = d/pi_pred
+  
+  target_0 <- plogis(qlogis(mu0_pred + epsilon[1]*H_0))
+  target_1 <- plogis(qlogis(mu1_pred + epsilon[2]*H_1))
+  
+  ATE <- mean((target_1 - target_0), na.rm = T)
+  return(ATE)
+}
+
+dml_pre <- function(y, d, x){
+  if('factor' %in% unlist(lapply(x, class))){
+    x <- fastDummies::dummy_cols(x, remove_first_dummy = T, remove_selected_columns = T) 
+  }
+  
+  n <- length(y)
+  n_2 <- n/2
+  n_2_1 = ifelse(round(n_2) == n_2, n_2, round(n_2))
+  n_2_2 = ifelse(round(n_2) == n_2, n_2, round(n_2)+1)
+  
+  # split the sample
+  random_vec <- sample(1:n, n)
+  I <- random_vec[1:n_2_1]
+  I_c <- random_vec[(n_2_1+1):n]
+  
+  return(list(
+    y_I = y[I],
+    d_I = d[I],
+    x_I = x[I,], 
+    y_I_c = y[I_c],
+    d_I_c = d[I_c],
+    x_I_c = x[I_c,]
+    ))
+}
+
+dml_post <- function(y_I, d_I, x_I = NULL, y_I_c, d_I_c, x_I_c = NULL,
+                     mu_pred1, pi_pred1, mu_pred2, pi_pred2){
+  
+  v1 <- d_I - pi_pred1
+  delta1 <- (sum(v1 * d_I))^-1 * sum(v1 * (y_I - pi_pred1))
+  
+  v2 <- d_I_c - pi_pred2
+  delta2 <- (sum(v2 * d_I_c))^-1 * sum(v2 * (y_I_c - pi_pred2))
+  
+  ate <- (delta1 + delta2)/2
+  
+  return(ate)
+}
+
+## Predictor functions
+ols_logit_dml <- function(y_I, d_I, x_I, y_I_c, d_I_c, x_I_c){
+  mu_mod1 <- lm(y ~ ., data.frame(y = y_I_c, x_I_c))
+  mu_pred1 <- predict(mu_mod1, newdata = data.frame(y = y_I, x_I))
+
+  pi_mod1 <- glm(d ~ ., data.frame(d = d_I_c, x_I_c), 
+                family = binomial(link = 'logit'))
+  pi_pred1 <- predict(pi_mod1, 
+                     newdata = data.frame(d = d_I, x_I), 
+                     type = 'response')
+  
+  mu_mod2 <- lm(y ~ ., data.frame(y = y_I, x_I))
+  mu_pred2 <- predict(mu_mod2, newdata = data.frame(y = y_I_c, x_I_c))
+
+  pi_mod2 <- glm(d ~ ., data.frame(d = d_I, x_I), 
+                family = binomial(link = 'logit'))
+  pi_pred2 <- predict(pi_mod2, 
+                     newdata = data.frame(d = d_I_c, x_I_c), 
+                     type = 'response')
+  
+  return(list(
+    mu_pred1 = mu_pred1,
+    pi_pred1 = pi_pred1,
+    mu_pred2 = mu_pred2,
+    pi_pred2 = pi_pred2
+  ))
+}
+
+grf_dml <- function(y_I, d_I, x_I, y_I_c, d_I_c, x_I_c){
+  mu_mod1 <- grf::regression_forest(X = x_I_c, Y = y_I_c, 
+                                       tune.parameters = "all")
+  mu_pred1 <- predict(mu_mod1, newdata = x_I)$predictions
+  
+  pi_mod1 <- grf::regression_forest(X = x_I_c, Y = d_I_c, tune.parameters = "all")
+  pi_pred1 <- predict(pi_mod1, newdata = x_I)$predictions
+  
+  mu_mod2 <- grf::regression_forest(X = x_I, Y = y_I, 
+                                       tune.parameters = "all")
+  mu_pred2 <- predict(mu_mod2, newdata = x_I_c)$predictions
+  
+  pi_mod2 <- grf::regression_forest(X = x_I, Y = d_I, tune.parameters = "all")
+  pi_pred2 <- predict(pi_mod2, newdata = x_I_c)$predictions
+
+  
+  return(list(
+    mu_pred1 = mu_pred1,
+    pi_pred1 = pi_pred1,
+    mu_pred2 = mu_pred2,
+    pi_pred2 = pi_pred2
+  ))
+}
+
+superlearner_dml <- function(y_I, d_I, x_I, y_I_c, d_I_c, x_I_c,
+                             folds = 5){
+  
+  
+  mu_mod1 <- SuperLearner(
+    Y = y_I_c,
+    X = x_I_c,
+    cvControl = list(V = folds),
+    SL.library=c("SL.glm", 
+                 "SL.glmnet", 
+                 "SL.xgboost"),
+    method="method.CC_nloglik", 
+    family=gaussian()
+  )
+  
+  pi_mod1 <- SuperLearner(
+    Y = d_I_c,
+    X = x_I_c,
+    cvControl = list(V = folds),
+    SL.library=c("SL.glm", 
+                 "SL.glmnet", 
+                 "SL.xgboost"),
+    method="method.CC_nloglik", 
+    family=binomial()
+  )
+  
+  
+  mu_pred1 <- predict(mu_mod1, newdata = x_I, type = 'response')$library.predict %*% mu_mod1$coef
+  pi_pred1 <- predict(pi_mod1, newdata = x_I, type = 'response')$pred
+  
+  mu_mod2 <- SuperLearner(
+    Y = y_I,
+    X = x_I,
+    cvControl = list(V = folds),
+    SL.library=c("SL.glm", 
+                 "SL.glmnet", 
+                 "SL.xgboost"),
+    method="method.CC_nloglik", 
+    family=gaussian()
+  )
+  
+  pi_mod2 <- SuperLearner(
+    Y = d_I,
+    X = x_I,
+    cvControl = list(V = folds),
+    SL.library=c("SL.glm", 
+                 "SL.glmnet", 
+                 "SL.xgboost"),
+    method="method.CC_nloglik", 
+    family=binomial()
+  )
+  
+  mu_pred2 <- predict(mu_mod2, newdata = x_I_c, type = 'response')$library.predict %*% mu_mod2$coef
+  pi_pred2 <- predict(pi_mod2, newdata = x_I_c, type = 'response')$pred
+  
+  return(list(
+    mu_pred1 = mu_pred1,
+    pi_pred1 = pi_pred1,
+    mu_pred2 = mu_pred2,
+    pi_pred2 = pi_pred2
+  ))
+}
+
+## Functions using double robust packages ####
+aipw_sim <- function(dat, seed = 185){
+
+  start_time <- Sys.time()
+  
+  set.seed(seed)
+  n <- length(dat)
+  aipw_list <- list()
+  # fail_count <- 0
+  
+  for(i in 1:n){
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = as.numeric(ifelse(dat[[i]]$z == 'trt', 1, 0)), 
+                          dat[[i]]$x)
+    
+    tryCatch({
+      sim_dat <- sim_dat %>%
+        fastDummies::dummy_cols(remove_first_dummy = T, remove_selected_columns = T) 
+      }, error=function(e){
+      })
+
+    tryCatch({
+      forest <- grf::causal_forest(X = select(sim_dat, 3:length(names(sim_dat))), 
+                                   Y = sim_dat$y, 
+                                   W = sim_dat$d)
+      # forest <- grf::causal_forest(X = select(sim_dat, starts_with('x')), 
+      #                              Y = sim_dat$y, W = sim_dat$d)
+      
+      aipw_out <- grf::average_treatment_effect(forest, target.sample = 'treated', method = 'AIPW')
+      
+      aipw_list[[i]] <- data.frame(d = aipw_out[[1]],
+                                   se = aipw_out[[2]],
+                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+        
+  }, error=function(e){
+    cat("ERROR :",conditionMessage(e), "\n")
+    })
+  }
+  
+  fail_count <- sum(sapply(aipw_list, function(x) is.null(x)))
+  # in case last few are errors
+  fail_count <- ifelse(length(aipw_list) == n, fail_count, fail_count + (n - length(aipw_list)))
+  
+  
+  end_time <- Sys.time()
+  
+  return(list(
+      est_df = bind_rows(aipw_list),
+      fail_count = fail_count,
+      comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+  )
+}
+
+tmle_sim <- function(dat, seed = 185){
+  start_time <- Sys.time()
+  
+  set.seed(seed)
+  n <- length(dat)
+  tmle_list <- list()
+  # fail_count <- 0
+  
+  for(i in 1:n){
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x) 
+    
+    tryCatch({
+      sim_dat <- sim_dat %>%
+        fastDummies::dummy_cols(remove_first_dummy = T, remove_selected_columns = T) 
+      }, error=function(e){
+      })
+
+    tryCatch({
+      forest <- grf::causal_forest(X = select(sim_dat, 3:length(names(sim_dat))), 
+                                   Y = sim_dat$y, W = sim_dat$d)
+      # forest <- grf::causal_forest(X = select(sim_dat, starts_with('x')), 
+      #   Y = sim_dat$y, W = sim_dat$d)
+      
+      tmle_out <- grf::average_treatment_effect(forest, target.sample = 'treated', method = 'TMLE')
+      
+      tmle_list[[i]] <- data.frame(d = tmle_out[[1]],
+                                   se = tmle_out[[2]],
+                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+        
+  }, error=function(e){
+    cat("ERROR :",conditionMessage(e), "\n")
+    })
+  }
+  
+  fail_count <- sum(sapply(tmle_list, function(x) is.null(x)))
+  # in case last few are errors
+  fail_count <- ifelse(length(tmle_list) == n, fail_count, fail_count + (n - length(tmle_list)))
+  
+  end_time <- Sys.time()
+  
+ return(list(
+      est_df = bind_rows(tmle_list),
+      fail_count = fail_count,
+      comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+  )
+}
+
+dml_sim <- function(dat, seed = 185){
+  library(mlr3)
+  library(mlr3learners)
+  
+  start_time <- Sys.time()
+  
+  set.seed(seed)
+  
+  n <- length(dat)
+  
+  dml_list <- list()
+  
+  for(i in 1:n){
+    print(paste0(i, ' out of ', n))
+    sim_dat <- data.frame(y = dat[[i]]$y, 
+                          d = ifelse(dat[[i]]$z == 'trt', 1, 0), 
+                          dat[[i]]$x) 
+    
+    lgr::get_logger("mlr3")$set_threshold("warn")
+    
+    learner = lrn("regr.ranger", num.trees=500, 
+                  max.depth=5, min.node.size=2)
+    ml_l = learner$clone()
+    ml_m = learner$clone()
+
+    tryCatch({
+      dml_out <- DoubleML::DoubleMLPLR$new(
+        DoubleML::DoubleMLData$new(sim_dat,
+                                 y_col = 'y',
+                                 d_cols = 'd',
+                                 x_cols = names(dat[[i]]$x)), 
+        ml_l=ml_l, ml_m=ml_m)
+      
+      dml_out$fit()
+      dml_list[[i]] <- data.frame(d = dml_out$all_coef[[1,1]],
+                                  se = dml_out$all_se[[1,1]],
+                               truth = mean(dat[[i]]$y.1) - mean(dat[[i]]$y.0))
+      
+  }, error=function(e){
+    cat("ERROR :",conditionMessage(e), "\n")
+    })
+  }
+  
+  fail_count <- sum(sapply(dml_list, function(x) is.null(x)))
+  # in case last few are errors
+  fail_count <- ifelse(length(dml_list) == n, fail_count, fail_count + (n - length(dml_list)))
+  
+  end_time <- Sys.time()
+  
+  return(list(
+      est_df = bind_rows(dml_list),
+      fail_count = fail_count,
+      comp_time = as.numeric(difftime(end_time, start_time, units = 'secs'))/(n-fail_count))
+      )
+}
+
+
+
+## Other functions ####
+normalize <- function(x, y){(x - min(y)) / (max(y) - min(y))}
+denormalize <- function(x, y){x * (max(y) - min(y))}
+
+perform <- function(est_df, label){
+  est_df %>%
+    # mutate(d = d/truth,
+    #        truth = 1) %>%
+    summarize(bias = mean(d - truth),
+              percent_bias = bias/sd(d),
+              rmse = sqrt(mean((ate - truth)^2)),
+              mae = median(abs(d - truth))
+              # fail_count = first(fail_count),
+              # comp_time = first(comp_time)
+              ) %>%
+    mutate(label = label,
+           n = nrow(est_df) + fail_count) %>%
+    select(label, everything()) %>%
+    return()
+}
+
+model_matrix <- function(...){
+  options(na.action='na.pass')
+  matrix_out <- model.matrix(...)
+  options(na.action = 'na.omit')
+  return(matrix_out)
+}
+
+compare_tbl <- function(model_list, treatment){
+  out_list <- list()
+  k <- 1
+  for(model_set in model_list){
+    names(model_set[[2]]) <- c('estimate', 'std.error')
+    
+    
+    out_list[[k]] <- tidy(model_set[[1]]) %>%
+      filter(term == treatment) %>%
+      bind_rows(bind_rows(model_set[[2]])) %>%
+      bind_rows(model_set[[3]]) %>%
+      mutate(term = c('Original', 'AIPW (GRF)', 'DML (SuperLearner)'), p.value = p_val(estimate, std.error)) 
+    
+    k <- k+1
+  }
+  return(out_list)
+}
+
+
+dml_grf <- function(outcome, treatment, covariates, clustervar = NULL, dataset, 
+                    fe = T, target = 'treated', paper, model, drop_na_grf = F, seed = 123){
+  set.seed(seed)
+  
+  dataset <- filter(dataset, !is.na(!!sym(outcome))) %>%
+    select(all_of(c(treatment, outcome, covariates, clustervar)))
+  
+  if(drop_na_grf == T){
+    dataset <- dataset %>%
+      drop_na()
+  }
+  
+  y <- as.numeric(dataset[[outcome]])
+  X <- model_matrix(~., select(dataset, all_of(covariates)))[,]
+  d <- as.numeric(dataset[[treatment]])
+  
+  grf_model <- grf::causal_forest(X = X, Y = y, W = d, seed = 123,
+                        clusters = dataset[[clustervar]])
+  
+  grf_out <- grf::average_treatment_effect(grf_model, target.sample = target)
+  
+  
+  dataset_drop_na <- as.data.frame(model_matrix(~., dataset)[,]) %>%
+    # remove annoying characters
+    rename_with(., ~ gsub("'", "", iconv(.x, from = "UTF-8", to='ASCII//TRANSLIT'))) %>%
+    rename_with(., ~ gsub("\\[|\\]|\\/|\\*|\\)|\\(", "", .x)) %>%
+    rename_with(., ~ gsub(" ", "", .x)) %>%
+    # drop missing
+    drop_na() %>%
+    # remove uninformative columns
+    select(where(~n_distinct(.) > 1)) 
+  dataset_drop_na <- dataset_drop_na %>%
+    left_join(dataset_drop_na %>%
+                group_by(!!sym(clustervar)) %>%
+                summarize(across(everything(), mean, .names = 'mean_{.col}')) %>%
+                ungroup()) %>%
+    mutate(intercept = 1)
+  # covariates_design <- dataset_drop_na %>% 
+  #   select(select(-c(treatment, outcome, clustervar))) %>%
+  #   names() %>%
+  #   append('intercept', after = 0)
+  covariates_design <- names(dataset_drop_na)[!(names(dataset_drop_na) %in% c(treatment, outcome, clustervar)) &
+                                                !str_detect(names(dataset_drop_na),  'mean_')]
+  
+  
+  
+  # dataset_drop_na$cov_mean <- dataset_drop_na %>%
+  #   select(all_of(covariates_design)) %>%
+  #   mutate_all(scale) %>%
+  #   apply(1, mean)
+
+
+  # dml_dataframe <- as.data.frame(cbind(y, d, 
+  #                                      d_bar = dataset_drop_na[[paste0('mean_', treatment)]],
+  #                                      as_tibble(X)[,-1], 
+  #                                      as_tibble(mean_X)[,-1], 
+  #                                      cluster = dataset_drop_na[[clustervar]]))
+  
+  
+  graph_ensemble_regr = gunion(list(
+      po("learner", lrn("regr.cv_glmnet", s = "lambda.min")),
+      po("learner", lrn('regr.xgboost', max_depth = 4)),
+      po("learner", lrn("regr.glm"))
+    )) %>>%
+      po("regravg", 3)
+  
+  ensemble_pipe_regr = as_learner(graph_ensemble_regr)
+  
+  # DML
+  set.seed(seed)
+  dml_data <- double_ml_data_from_data_frame(dataset_drop_na,
+                                             x_cols = covariates_design,
+                                             y_col = outcome,
+                                             d_cols = treatment,
+                                             cluster_cols = clustervar)
+  
+  # y <- as.numeric(dataset_drop_na[[outcome]])
+  # # X <- select(dataset_drop_na, covariates_design)
+  # X <- model_matrix(~., select(dataset_drop_na, all_of(covariates)))[,]
+  # # mean_X <- model_matrix(~., select(dataset_drop_na, all_of(paste0('mean_', covariates))))[,]
+  # d <- as.numeric(dataset_drop_na[[treatment]])
+  # 
+  # dml_data <- double_ml_data_from_matrix(X = X, y = y, d = d, 
+  #                                        cluster_vars = dataset_drop_na[[clustervar]])
+  
+  # dml_data <- double_ml_data_from_matrix(X = select(dataset_drop_na, all_of(covariates_design)),
+  #                                            y = dataset_drop_na[,outcome],
+  #                                            d = dataset_drop_na[,treatment],
+  #                                            cluster_vars = dataset_drop_na[,clustervar])
+  obj_dml_plr_sim_pipe_ensemble = DoubleMLPLR$new(dml_data,
+                                                  ml_l = ensemble_pipe_regr,
+                                                  ml_m = ensemble_pipe_regr)
+  obj_dml_plr_sim_pipe_ensemble$fit() 
+  dml_out <- data.frame(estimate = obj_dml_plr_sim_pipe_ensemble$coef,
+                         std.error = obj_dml_plr_sim_pipe_ensemble$se)
+  
+  if(fe == T){
+    # DML CRE
+    set.seed(seed)  
+    dml_data_cre <- XTDML::dml_cre_data_from_data_frame(dataset_drop_na,
+                                                 x_cols = covariates_design,
+                                                 y_col = outcome,
+                                                 d_cols = treatment,
+                                                 xbar_cols = paste0('mean_', covariates_design[-length(covariates_design)]),
+                                                 dbar_cols = paste0('mean_', treatment),
+                                                 cluster_cols = clustervar)  
+    obj_dml_cre = XTDML::dml_cre_plr$new(dml_data_cre,
+                                         ml_l = ensemble_pipe_regr,
+                                         ml_m = ensemble_pipe_regr)
+    
+    obj_dml_cre$fit()
+    dml_cre_out <- data.frame(estimate = obj_dml_cre$coef_theta,
+                           std.error = obj_dml_cre$se_theta)
+  
+  # DML WG-CRE
+  require(parameters)
+  set.seed(seed)  
+  dml_data_wg_cre <- XTDML::dml_hybrid_data_from_data_frame(dataset_drop_na,
+                                               x_cols = covariates_design,
+                                               y_col = outcome,
+                                               d_cols = treatment,
+                                               xbar_cols = paste0('mean_', covariates_design[-length(covariates_design)]),
+                                               dbar_cols = paste0('mean_', treatment),
+                                               cluster_cols = clustervar)  
+  obj_dml_wg_cre = XTDML::dml_hybrid_plr$new(dml_data_wg_cre,
+                                       ml_l = ensemble_pipe_regr,
+                                       ml_m = ensemble_pipe_regr)
+  
+  obj_dml_wg_cre$fit()
+  dml_wg_cre_out <- data.frame(estimate = obj_dml_wg_cre$coef_theta,
+                         std.error = obj_dml_wg_cre$se_theta)
+  } else {
+    dml_cre_out <- data.frame(estimate = NA,
+                           std.error = NA)
+    dml_wg_cre_out <- data.frame(estimate = NA,
+                         std.error = NA)
+  }
+  
+  return(list(grf = grf_out, 
+              dml = dml_out,
+              dml_cre = dml_cre_out,
+              dml_wg_cre = dml_wg_cre_out))
+}
+```
+
+
+
+```{r results-load}
+
+lm_df <- read_csv(here('files', 'lm_df.csv')) %>%
+  mutate(method = 'ols')
+
+psm_df <- read_csv(here('files', 'psm_df.csv')) %>%
+  mutate(method = 'psm')
+
+lin_df <- read_csv(here('files', 'lin.csv')) %>%
+  mutate(method = 'lin')
+
+ipw_df <- read_csv(here('files', 'ipw.csv')) %>%
+  mutate(estimator = method,
+         method = 'ipw')
+
+gcomp_df <- read_csv(here('files', 'gcomp.csv')) %>%
+  mutate(estimator = method,
+         method = 'g-comp')
+
+aipw_df <- read_csv(here('files/homemade', 'aipw.csv')) %>%
+  mutate(estimator = method,
+         method = 'aipw')
+
+aipw_trunc_df <- read_csv(here('files/homemade', 'aipw_trunc.csv')) %>%
+  mutate(estimator = method,
+         method = 'aipw')
+
+tmle_df <- read_csv(here('files/homemade', 'tmle.csv')) %>%
+  # filter(fail == F) %>%
+  select(-fail) %>%
+  mutate(estimator = method,
+         method = 'tmle')
+
+dml_df <- bind_rows(
+  mutate(read_csv(here('files/homemade', 'dml_ols_logit.csv')), 
+         estimator = 'ols_logit',
+         method = 'dml',
+         dataset = row_number()),
+  mutate(read_csv(here('files/homemade', 'dml_grf.csv')), 
+         estimator = 'grf',
+         method = 'dml',
+         dataset = row_number()),
+  mutate(read_csv(here('files/homemade', 'dml_superlearner.csv')), 
+         estimator = 'superlearner',
+         method = 'dml',
+         dataset = row_number())
+) %>%
+  select(names(tmle_df))
+
+aipw_package_df <- read_csv(here('files/homemade', 'aipw_package.csv')) %>%
+  mutate(estimator = 'grf (pack.)',
+         method = 'aipw')
+
+dml_package_df <- read_csv(here('files/homemade', 'dml_package.csv')) %>%
+  mutate(estimator = 'superlearner (pack.)',
+         method = 'dml')
+
+
+sim_results <- bind_rows(lm_df, psm_df, lin_df, ipw_df, gcomp_df, aipw_trunc_df, tmle_df, dml_df, aipw_package_df, dml_package_df) %>%
+  mutate(estimator = factor(estimator, levels = c('ols_logit', 'ols', 'logit', 
+          'grf', 'grf (pack.)', 'superlearner', 'superlearner (pack.)')),
+         method = factor(method, levels = c('ols', 'psm', 'ipw', 'g-comp', 'lin', 
+                                            'aipw', 'tmle', 'dml'))) %>%
+  arrange(method, estimator) %>%
+  #mutate(estimator = ifelse(is.na(estimator), 'NA', estimator)) %>%
+  mutate(bias = ate - truth,
+         method_estimator = ifelse(is.na(estimator), as.character(method), paste0(method, ', ', estimator))) %>%
+  mutate(method_estimator = factor(method_estimator, levels = unique({.$method_estimator}))) 
+
+# write_csv(sim_results, here('files', 'lalonde_means.csv'))
+```
+
+
+
+
+# (APPENDIX) Appendix {-}
+
+\newpage
+
+# LaLonde NSW Data
+
+```{r lalonde-packages, eval = F}
+library(grf)
+library(DoubleML)
+library(mlr3)
+library(mlr3pipelines)
+library(mlr3learners)
+library(mlr3extralearners)
+
+dml_grf_att <- function(outcome, treatment, covariates, dataset, 
+                    paper, model,  seed = 123){
+  set.seed(seed)
+  
+  dataset <- filter(dataset, !is.na(!!sym(outcome))) %>%
+    select(all_of(c(treatment, outcome, covariates)))
+  
+  y <- as.numeric(dataset[[outcome]])
+  X <- model_matrix(~., select(dataset, all_of(covariates)))[,]
+  d <- as.numeric(dataset[[treatment]])
+  
+  grf_model <- grf::causal_forest(X = X, Y = y, W = d, seed = 123)
+  
+  grf_out <- grf::average_treatment_effect(grf_model, target.sample = 'treated')
+
+  
+  
+  
+  # dataset_drop_na$cov_mean <- dataset_drop_na %>%
+  #   select(all_of(covariates_design)) %>%
+  #   mutate_all(scale) %>%
+  #   apply(1, mean)
+
+
+  # dml_dataframe <- as.data.frame(cbind(y, d, 
+  #                                      d_bar = dataset_drop_na[[paste0('mean_', treatment)]],
+  #                                      as_tibble(X)[,-1], 
+  #                                      as_tibble(mean_X)[,-1], 
+  #                                      cluster = dataset_drop_na[[clustervar]]))
+  
+  
+  graph_ensemble_regr = gunion(list(
+      po("learner", lrn("regr.cv_glmnet", s = "lambda.min")),
+      po("learner", lrn('regr.xgboost', max_depth = 4)),
+      po("learner", lrn("regr.glm"))
+    )) %>>%
+      po("regravg", 3)
+  
+  ensemble_pipe_regr = as_learner(graph_ensemble_regr)
+  
+  # DML
+  set.seed(seed)
+  dml_data <- double_ml_data_from_data_frame(dataset,
+                                             x_cols = covariates,
+                                             y_col = outcome,
+                                             d_cols = treatment)
+  
+  # y <- as.numeric(dataset_drop_na[[outcome]])
+  # # X <- select(dataset_drop_na, covariates_design)
+  # X <- model_matrix(~., select(dataset_drop_na, all_of(covariates)))[,]
+  # # mean_X <- model_matrix(~., select(dataset_drop_na, all_of(paste0('mean_', covariates))))[,]
+  # d <- as.numeric(dataset_drop_na[[treatment]])
+  # 
+  # dml_data <- double_ml_data_from_matrix(X = X, y = y, d = d, 
+  #                                        cluster_vars = dataset_drop_na[[clustervar]])
+  
+  # dml_data <- double_ml_data_from_matrix(X = select(dataset_drop_na, all_of(covariates_design)),
+  #                                            y = dataset_drop_na[,outcome],
+  #                                            d = dataset_drop_na[,treatment],
+  #                                            cluster_vars = dataset_drop_na[,clustervar])
+  obj_dml_plr_sim_pipe_ensemble = DoubleML::DoubleMLIRM(dml_data, score = 'ATTE',
+                                                  ml_l = ensemble_pipe_regr,
+                                                  ml_m = ensemble_pipe_regr)
+  obj_dml_plr_sim_pipe_ensemble$fit() 
+  dml_out <- data.frame(estimate = obj_dml_plr_sim_pipe_ensemble$coef,
+                         std.error = obj_dml_plr_sim_pipe_ensemble$se)
+  
+  
+  return(list(grf = grf_out, 
+              dml = dml_out))
+}
+
+unemp_func <- function(x){
+  x %>%
+    as.data.frame() %>%
+    mutate(re74_0 = re74 == 0,
+         re75_0 = re75 == 0) 
+}
+
+lalonde_exp <- read_dta(here('data', 'nsw.dta')) %>%
+  as.data.frame() %>%
+  mutate(re75_0 = re75 == 0)
+lalonde_exp_74 <- read_dta(here('data', 'nsw_dw.dta')) %>%
+  unemp_func()
+lalonde_cps1_controls <- read_dta(here('data', 'cps_controls.dta')) %>%
+  unemp_func()
+lalonde_cps3_controls <- read_dta(here('data', 'cps_controls3.dta')) %>%
+  unemp_func()
+lalonde_psid1_controls <- read_dta(here('data', 'psid_controls.dta')) %>%
+  unemp_func()
+lalonde_psid3_controls <- read_dta(here('data', 'psid_controls3.dta')) %>%
+  unemp_func()
+
+
+lalonde_exp_models <- dml_grf_att(outcome = 're78', 
+        treatment = 'treat', 
+        covariates = c('age', 'education', 'black', 'hispanic', 'married', 'nodegree', 're75', 're75_0'),
+        dataset = lalonde_exp,
+        paper = 'NSW',
+        model = 'experimental')
+
+```
+
+
+
+
+```{r lalonde, fig.height = 8, fig.cap = 'ATE estimates and 95-percent bootstrap standard error confidence intervals for Lalonde NSW data as provided by Dehejia and Wahba (1999), with CPS and PSID comparison groups. Standard errors shown in parentheses. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, not having a high school degree, and having no earnings in 1975. The "With 1974 earnings" estimates additionally include earnings in 1974 as a covariate, along with an indicator for having no earnings in 1974.'}
+# lalonde_means <- read_csv(here('files', 'lalonde_means.csv'))
+
+lalonde_results <- sim_results %>%
+  mutate(set = ifelse(set == 'lalondeCPS-3 74', 'lalonde CPS-3 74', set),
+         set = ifelse(set == 'lalondeCPS-3 original', 'lalonde CPS-3 original', set)) %>%
+  filter(str_detect(set, 'lalonde')) %>%
+  # filter(str_detect(set, 'experimental') | str_detect(set, 'PSID-3')) %>%
+  group_by(set, method_estimator, method, estimator) %>%
+  summarize(se = sd(ate),
+            estimate = mean(ate)) %>%
+  ungroup() %>%
+  # left_join(select(lalonde_means, estimate = ate, method, estimator, set)) %>%
+  separate_wider_delim(set, delim = ' ', names = c('set', 'sample', 'include_74')) %>%
+  mutate(sample = str_replace(sample, 'experimental', 'Experimental'),
+         sample = factor(sample, levels = c('Experimental', 'CPS-1', 'CPS-3', 'PSID-1', 'PSID-3')),
+         # estimator = factor(estimator, levels = c('ols_logit', 'ols', 'logit', 'grf', 'superlearner')),
+         # method = factor(method, levels = c('ols', 'psm','ipw', 'g-comp', 'lin', 'aipw', 'tmle', 'dml')),
+         include_74 = ifelse(include_74 == '74', 'With 1974 earnings', 'Original LaLonde sample'),
+         lower = estimate - 1.96*se, 
+         upper = estimate + 1.96*se) 
+
+
+
+            # lower = quantile(ate, .0275),
+            # upper = quantile(ate, .975))
+            # upper = estimate + 1.96*sd(ate),
+            # lower = estimate - 1.96*sd(ate))
+
+lalonde_results %>%
+  mutate(method_estimator = str_replace(method_estimator, 'superlearner', 'superl.')) %>%
+  mutate(method_estimator = factor(method_estimator, levels = unique({.$method_estimator}))) %>%
+  ggplot(aes(x = sample, y = estimate, color = include_74, shape = include_74)) +
+  geom_pointrange(aes(ymin = lower, ymax = upper), position = position_dodge(width = .5), size = .3) +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~method_estimator) +
+  labs(x = '', y = '') +
+  coord_cartesian(ylim = c(-5000, 5000)) +
+  theme(axis.text.x=element_text(angle=90, hjust=0.95,vjust=0.3),
+        legend.position = 'bottom')  +
+  labs(title = 'Results for Lalonde NSW data, with CPS and PSID comparison groups')
+
+ggsave(here('draft/figures', 'lalonde.png'), width = 18,  height = 8, dpi = 1200)
+```
+
+
+As another evaluation of these methods, I use data from LaLonde's [-@lalonde_1986_evaluating] study of the National Supported Work Demonstration (NSW), as provided by @dehejia_1999_causal. Between March 1975 and July 1977, the NSW randomly provided training to disadvantaged workers. LaLonde used earnings in 1978 as the outcome of interest; comparing earnings in this year for treated and untreated workers allows an experimental estimate of the effect of the intervention. Restricting the sample to men, this study had `r nrow(filter(lalonde_exp, treat == T))` treated and `r nrow(filter(lalonde_exp, treat == F))` control participants. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, and not having a high school degree. Following @dehejia_1999_causal, I add a variable indicating whether each respondent's earnings in 1975 was $0 -- i.e., they were unemployed.     
+
+LaLonde compared these experimental estimates to control samples drawn from the Panel Study of Income Dynamics (PSID) and Westat's Matched Current Population Survey-Social Security Administration File (CPS). The PSID-1 sample (*n* = `r nrow(lalonde_psid1_controls)`) contains all male household heads under 55 who did not classify themselves as retired in 1975, and the PSID-3 sample (*n* = `r nrow(lalonde_psid3_controls)`) further restricts this to men who were not working in the spring of 1976 or 1975. The CPS-1 sample (*n* = `r nrow(lalonde_cps1_controls)`) includes all CPS males under 55, and CPS-3 (*n* = `r nrow(lalonde_cps3_controls)`) restricts this two those who were not working in March 1976 whose earnings in 1975 were below the poverty level. Restricting these observational samples gets closer to the group eligible for the NSW.  
+
+Following @dehejia_1999_causal, I present results for the original samples analyzed by @lalonde_1986_evaluating, but I also include results using a subsample of the experimental group that has 1974 earnings data available (`r nrow(filter(lalonde_exp_74, treat == T))` treated and `r nrow(filter(lalonde_exp_74, treat == F))` control participants) and include this additional covariate, along with an indicator variable for no earnings in 1974.  
+
+Results are presented in Figure \@ref(fig:lalonde), with a table in the Appendix (Table 
+\@ref(tab:lalonde-all)). Standard errors are based on 100 bootstrap samples. We first focus on the original LaLonde dataset, which did not include 1974 earnings. The "experimental" estimates provide a baseline for the comparison, suggesting that the program resulted in an earnings gain of about \$800. Some methods calculate widely different results for the experimental estimates, highlighting their instability. Echoing results from the simulations, methods that include logit models are particularly unstable.  
+
+If selection on observables holds, then we should be able to recover experimental estimates from the non-experimental control groups. Most of the methods do not perform very well, estimating treatment effects with the wrong sign. The exception is in the PSID-3 sample, where 12 of the 17 methods estimate treatment effects with the correct (positive) sign. This sample is chosen to be closer to the experimental sample. 
+
+Including 1974 earnings data results in much better estimates with the observational control groups. OLS, PSM, G-computation (SuperLearner), AIPW (SuperLearner), TMLE (SuperLearner), and DML (OLS/logit) compute fairly stable estimates across the samples. On the other hand, the estimates produced by IPW (logit), IPW (GRF), IPW (SuperLearner), the Lin estimator, and DML (GRF) vary widely across samples.   
+
+These results highlight the importance of selection on observables holding. Without including 1974 earnings as a covariate, it appears that selection on observables does not hold, as most methods provide highly inaccurate estimates with the wrong sign. Once 1974 earnings are included, most of the methods provide estimates much closer to the experimental values. 
+
+\newpage
+
+```{r lalonde-all}
+# lalonde_results <- sim_results %>%
+#   mutate(set = ifelse(set == 'lalondeCPS-3 74', 'lalonde CPS-3 74', set),
+#          set = ifelse(set == 'lalondeCPS-3 original', 'lalonde CPS-3 original', set)) %>%
+#   filter(str_detect(set, 'lalonde')) %>%
+#   separate_wider_delim(set, delim = ' ', names = c('set', 'sample', 'include_74')) %>%
+#   mutate(sample = factor(sample, levels = unique({.$sample})),
+#          include_74 = ifelse(include_74 == 'original', 'No', "Yes"))
+  
+
+lalonde_results %>%
+  mutate(include_74 = ifelse(include_74 == 'With 1974 earnings', 'Yes', 'No')) %>%
+  # group_by(set, sample, include_74, method_estimator) %>%
+  # summarize(estimate = mean(ate),
+  #           se = sd(ate)) %>%
+  # ungroup() %>%
+  mutate(value = paste0(round(estimate), ' (', round(se), ')')) %>%
+  select(`'74 earnings?` = include_74, Sample = sample, Method = method_estimator, value) %>%
+  arrange(Sample) %>%
+  pivot_wider(values_from = value, names_from = Sample) %>%
+  arrange(`'74 earnings?`, Method) %>%
+  mutate(Method = str_replace(Method, 'superlearner', 'superl.')) %>%
+  kableExtra::kable(booktabs = T, 
+                    # digits = 3,
+                    linesep = '',
+                    caption = 'ATE estimates for Lalonde NSW data as provided by Dehejia and Wahba (1999), with CPS and PSID comparison groups. Bootstrap standard errors shown in parentheses. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, not having a high school degree, and having no earnings in 1975. The "With 1974 earnings" estimates additionally include earnings in 1974 as a covariate, along with an indicator for having no earnings in 1974.') %>%
+  kable_styling(latex_options = c("hold_position")) 
+```
+
+```{r lalonde-traditional, eval = F}
+lalonde_results <- sim_results %>%
+  mutate(set = ifelse(set == 'lalondeCPS-3 74', 'lalonde CPS-3 74', set),
+         set = ifelse(set == 'lalondeCPS-3 original', 'lalonde CPS-3 original', set)) %>%
+  filter(str_detect(set, 'lalonde')) %>%
+  separate_wider_delim(set, delim = ' ', names = c('set', 'sample', 'include_74')) %>%
+  mutate(sample = factor(sample, levels = unique({.$sample})),
+         estimator = factor(estimator, levels = c('ols_logit', 'ols', 'logit', 'grf', 'superlearner')),
+         method = factor(method, levels = c('ols', 'psm','ipw', 'g-comp', 'lin', 'aipw', 'tmle', 'dml')))
+  
+
+lalonde_results_df <- lalonde_results %>%
+  group_by(set, sample, include_74, method_estimator) %>%
+  summarize(estimate = mean(ate),
+            se = sd(ate)) %>%
+  ungroup() %>%
+  mutate(value = paste0(round(estimate), ' (', round(se), ')')) %>%
+  select(include_74, sample, method_estimator, value) %>%
+  pivot_wider(values_from = value, names_from = method_estimator) %>%
+  arrange(desc(include_74))
+
+lalonde_results_df %>%
+  select(include_74:`lin`) %>%
+  kableExtra::kable(booktabs = T, 
+                    # digits = 3,
+                    # linesep = '',
+                    caption = 'Traditional methods: ATE estimates for Lalonde NSW data as provided by Dehejia and Wahba (1999), with CPS and PSID comparison groups. Bootstrap standard errors shown in parentheses. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, not having a high school degree, and having no earnings in 1975. The "With 1974 earnings" estimates additionally include earnings in 1974 as a covariate, along with an indicator for having no earnings in 1974.') %>%
+  kable_styling(latex_options = c("hold_position")) 
+```
+
+\newpage
+
+# Replications with Fixed Effects
+
+The tables below provide estimates from the ASR replications presented in the main text, but with the addition of two other models. These implement methods proposed by @clarke_2024_double that incorporate individual or group fixed effects into DML. The authors' package, `XTDML`, builds on the `DoubleML` package. I use two of their procedures. First, correlated random effects (CRE) models explicitly models the correlation between the group-level components in both the treatment and outcome models. Second, the authors' "hybrid" model combines CRE with a within-group estimator that partials out group means from all variables, similar to the function of fixed effects in OLS.
+
+
+```{r rep-aksoy}
+readRDS(here('replication', 'aksoy_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = '{stars}. Covariates include GDP growth, population, turnout, number of parliamentary seats in province in Model 2 and 3; Models 3 also adjusts for the lagged value of the dependent variable (i.e., one election lagged Islamic votes); cluster robust standard errors are in parentheses. The AIPW (GRF) model does not drop incomplete observations.') %>%
+  huxtable::insert_row(c('Covariates', 'No', rep('Yes', 2)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Lagged dependent variable', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Election year fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Province fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-4):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-4), 2:4) %>%
+  huxtable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"') %>%
+  huxtable::set_width(.8) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+# read_rds(here('replication', 'aksoy_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7:8, 1:4, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:4) %>%
+#   flextable::hline(9) %>%
+#   flextable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"')
+```
+
+\newpage
+
+```{r rep-biegert}
+readRDS(here('replication', 'biegert_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = '{stars}. With no control variables, Model 1 could not be estimated using DML with a SuperLearner. Model 2 adjusts for year (fixed effects in original model), height (cm), position, age at league entry, being Black, and NBA tenure. Model 3 adds controls for the previous year\'s average points per 36 minutes, average assists per 36 minutes, average rebounds per 36 minutes, minutes played, whether the team reached playoffs, the team\'s win percentage, and whether it was a big market team. Model 4 adds controls for current average points, average assists, and average rebounds per 36 minutes. Model 5 additionally controls for current minutes played, whether the team reaches the playoffs, the team win percentage, and whether it is a big market team. Model 6 adds controls for cumulative all-star nominations, average points per 36 minutes, average assists per 36 minutes, average rebounds per 36 minutes, minutes played, team reached playoffs rate, team win percentage, and big market team rate. Player clustered standard errors are in parentheses. None of the original models include player fixed effects. The AIPW (GRF) model does not drop incomplete observations.') %>%
+  huxtable::insert_row(c('Baseline confounders', 'No', rep('Yes', 5)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Prior situation + performance', rep('No', 2), rep('Yes', 4)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Current performance', rep('No', 3), rep('Yes', 3)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Current situation', rep('No', 4), rep('Yes', 2)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Cumul. AS + cumul. mediators', rep('No', 5), 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-5):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-5), 2:7) %>%
+  huxtable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"') %>%
+  huxtable::set_width(1) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+
+# read_rds(here('replication', 'biegert_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7:11, 1:7, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:7) %>%
+#   flextable::padding(padding = 0, part = "all") %>% 
+#   flextable::autofit() %>%
+#   flextable::hline(12) %>%
+#   flextable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"')
+```
+
+\newpage
+
+```{r rep-nussio-ind}
+readRDS(here('replication', 'nussio_ind_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = "{stars}. Models estimate the effect of the log number of names that respondents know in their colonia (neighborhood) on whether they had ever participate in a lynching. Model 1 controls for the extent to which people trust others living in their neighborhood. Model 2 adds controls for education, age, female, number of light bulbs, and unemployment. Model 3 additionally controls for employment, being Catholic or non-religious, whether someone has participated in a fight, whether parents live in the colonia, trust in government, garbage on the street, and residential street block. Colonia clustered standard errors are in parentheses. Model 4 adds colonia fixed effects. The AIPW (GRF) model does not drop incomplete observations.") %>%
+  huxtable::insert_row(c('Colonia FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-2):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-2), 2:5) %>%
+  huxtable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"') %>%
+  huxtable::set_width(.8) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+
+
+# read_rds(here('replication', 'nussio_ind_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7:8, 1:5, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:5) %>%
+#   flextable::hline(9) %>%
+#   flextable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"')
+```
+
+\newpage
+
+```{r rep-nussio-ag}
+readRDS(here('replication', 'nussio_ag_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = "{stars}. Models estimate the effect of neighborly cooperation -- operationalized by the proportion of respondents who think that most neighbors help each other in problems related to electric lighting -- on the log municipal lynching rate. Model 1 adds controls for the proportion of respondents in a municipality that trust their neighbors. Model controls for population, area in square kilometers, poverty rate, Gini coefficient, share indigenous people, non-religious population, homicide rate, and robbery rate. Model 3 adds controls for household victimization and trust in army. Model 4 adds estado (state) fixed effects. Municipality clustered standard errors are in paratheses. The AIPW (GRF) model does not drop incomplete observations.") %>%
+  huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Estado FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Estado clustered SE', 'Yes', 'Yes', 'Yes', 'No'), after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-3):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-3), 2:5) %>%
+  huxtable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"') %>%
+  huxtable::set_width(.8) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+# read_rds(here('replication', 'nussio_ag_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7:9, 1:5, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:5) %>%
+#   flextable::hline(10) %>%
+#   flextable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"')
+```
+
+\newpage
+
+```{r rep-nussio-ne}
+readRDS(here('replication', 'nussio_ne_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = "{stars}. Models estimate the effect of the Puebla earthquake on September 19, 2017, on the number of lynching events. Data is a panel of Mexican municipalities from 2000 to 2020. Specific independent variables include having an earthquake within 250 km (Models 1 and 2) or having earthquake damage (Models 3 and 4), each interacted with a post-2017 indicator variable. Municipality clustered standard errors are in parentheses. The original models include two-way fixed effects for year and municipality. Model 2 and 4 additionally control for homicides, robberies, kidnappings, and infant mortality. Machine learning models control for year. All models drop incomplete observations; Models 1, and 3 have 51,597 observations, while Models 2, and 4 have 17,225 observations. Due to complications with continuous treatment effects, I do not present the original Models 5 and 6, where the independent variable was distance from the earthquake.") %>%
+  huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes'), 
+                       after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-1):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-1), 2:5) %>%
+  huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
+  huxtable::set_width(.8) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+
+
+# Final table
+# huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1),
+#                                   list(m2, grf_out2, dml_out2),
+#                                   list(m3, grf_out3, dml_out3),
+#                                   list(m4, grf_out4, dml_out4),
+#                                   list(m5, grf_out5, dml_out5),
+#                                   list(m6, grf_out6, dml_out6)),
+#                              tidy = F),
+#                  statistics = NA) %>%
+#   huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes', 'No', 'Yes'), 
+#                        after = nrow(.) - 1) %>%
+#   huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
+
+# read_rds(here('replication', 'nussio_ne_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7, 1:7, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:7) %>%
+#   flextable::hline(8) %>%
+#   flextable::padding(padding = 0, part = "all") %>% 
+#   flextable::autofit() %>%
+#   flextable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"')
+```
+
+
+\newpage
+
+# Tables of Results
+
+```{r dorie-results-table}
+sim_results %>%
+  # bind_rows(mutate(aipw_df, method = as.factor('aipw (original)'))) %>%
+  filter(set == 'main') %>%
+  group_by(estimator, method) %>%
+  summarize(bias = round(mean(ate - truth, na.rm = T), 3),
+            # var = round(var(ate, na.rm = T), 3),
+            percent_bias = bias/sd(ate, na.rm = T),
+            rmse = round(sqrt(mean((ate - truth)^2, na.rm = T)), 3),
+            mae = median(abs(ate - truth), na.rm = T),
+            comp_time = median(comp_time),
+            fail_count = n() - sum(!is.na(ate))
+              ) %>%
+  select(method, everything()) %>%
+  arrange(method, estimator) %>% 
+  # mutate(bias = as.character(bias),
+  #        rmse = as.character(rmse)) %>%
+  # mutate(across(bias:comp_time, function(x){as.character(round(x, 3))})) %>%
+  kableExtra::kable(booktabs = T, 
+                    digits = 3,
+                    linesep = '',
+                    caption = 'Main datasets: Results of Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 10 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
+  kable_styling(latex_options = c("hold_position"))
+```
+
+
+
+\newpage
+
+
+```{r dorie-linear-results}
+sim_results %>%
+  filter(set == 'linear') %>%
+  # bind_rows(mutate(aipw_df, method = as.factor('aipw (original)'))) %>%
+  group_by(estimator, method) %>%
+  summarize(bias = round(mean(ate - truth, na.rm = T), 3),
+            percent_bias = bias/sd(ate, na.rm = T),
+            rmse = round(sqrt(mean((ate - truth)^2, na.rm = T)), 3),
+            mae = median(abs(ate - truth), na.rm = T),
+            comp_time = median(comp_time),
+            fail_count = n() - sum(!is.na(ate))
+              ) %>%
+  select(method, everything()) %>%
+  arrange(method, estimator) %>%
+  # mutate(across(bias:comp_time, function(x){as.character(round(x, 3))})) %>%
+  kableExtra::kable(booktabs = T, 
+                    digits = 3,
+                    linesep = '',
+                    caption = 'Linear datasets: Results of Monte Carlo simulations using the two datasets from Dorie et al. (2019), with linear data generating processes, 100 replications each ("linear"). Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
+  kable_styling(latex_options = c("hold_position"))
+```
+
+\newpage
+
+
+
+
+```{r dorie-results-size}
+sim_results %>%
+  filter(set %in% c('small', 'large')) %>% 
+  group_by(estimator, method, size) %>%
+  summarize(bias = round(mean(ate - truth, na.rm = T), 3),
+            percent_bias = bias/sd(ate, na.rm = T),
+            rmse = round(sqrt(mean((ate - truth)^2, na.rm = T)), 3),
+            mae = median(abs(ate - truth), na.rm = T),
+            comp_time = median(comp_time),
+            fail_count = n() - sum(!is.na(ate))
+              ) %>%
+  select(method, everything()) %>%
+  arrange(method, estimator, size) %>%  
+  # mutate(bias = as.character(bias),
+  #        rmse = as.character(rmse)) %>%
+  # mutate(across(bias:comp_time, function(x){as.character(round(x, 3))})) %>%
+  kableExtra::kable(booktabs = T, 
+                    digits = 3,
+                    linesep = '',
+                    longtable = T,
+                    caption = 'Sample size: Results of Monte Carlo simulations using dataset 7 from Dorie et al. (2019) with varying sample sizes, 20 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
+  kable_styling(latex_options = c("hold_position")) #'repeat_header')) 
+```
+
+\newpage
+
+
+# References
+
+<div id="refs"></div>
