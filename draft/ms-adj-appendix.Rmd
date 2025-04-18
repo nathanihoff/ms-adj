@@ -16,15 +16,13 @@ header-includes:
   # - \let\footnote=\endnote
   # - \setlength{\headheight}{14.5pt}
   # - \setlength{\headheight}{13.6pt}
-  - \usepackage{fancyhdr}
-  - \pagestyle{fancy}
-  - \lhead{N.I. Hoffmann} 
-  - \rhead{`r format(Sys.time(), '%B %e, %Y')`}
-  - \counterwithin{figure}{section}
-  - \counterwithin{table}{section}
-# - \newcommand{\beginsupplement}{\setcounter{table}{0}  
-# \renewcommand{\thetable}{A\arabic{table}} \setcounter{figure}{0} 
-# \renewcommand{\thefigure}{A\arabic{figure}}}
+  # - \usepackage{fancyhdr}
+  # - \pagestyle{fancy}
+  # - \lhead{N.I. Hoffmann} 
+  # - \rhead{`r format(Sys.time(), '%B %e, %Y')`}
+  # - \counterwithin{figure}{section}
+  # - \counterwithin{table}{section}
+
 
 editor_options: 
   chunk_output_type: console
@@ -44,11 +42,11 @@ bibliography: "/Users/nathan/Documents/My Library.bib"
 csl: apa.csl
 # csl: american-sociological-association.csl
 
-title: "Online Appendix"
+title: "Supplementary Material"
 subtitle: "Double Robust, Flexible Adjustment Methods for Causal Inference: An Overview and an Evaluation"
 
-author:  Nathan I. Hoffmann, Departments of Sociology and Statistics, UCLA
-date: "`r format(Sys.time(), '%B %e, %Y')`"
+# author:  Nathan I. Hoffmann, Departments of Sociology and Statistics, UCLA
+# date: "`r format(Sys.time(), '%B %e, %Y')`"
 
 
 ---
@@ -909,41 +907,41 @@ gcomp_df <- read_csv(here('files', 'gcomp.csv')) %>%
   mutate(estimator = method,
          method = 'g-comp')
 
-aipw_df <- read_csv(here('files/homemade', 'aipw.csv')) %>%
+aipw_df <- read_csv(here('files', 'aipw.csv')) %>%
   mutate(estimator = method,
          method = 'aipw')
 
-aipw_trunc_df <- read_csv(here('files/homemade', 'aipw_trunc.csv')) %>%
+aipw_trunc_df <- read_csv(here('files', 'aipw_trunc.csv')) %>%
   mutate(estimator = method,
          method = 'aipw')
 
-tmle_df <- read_csv(here('files/homemade', 'tmle.csv')) %>%
+tmle_df <- read_csv(here('files', 'tmle.csv')) %>%
   # filter(fail == F) %>%
   select(-fail) %>%
   mutate(estimator = method,
          method = 'tmle')
 
 dml_df <- bind_rows(
-  mutate(read_csv(here('files/homemade', 'dml_ols_logit.csv')), 
+  mutate(read_csv(here('files', 'dml_ols_logit.csv')), 
          estimator = 'ols_logit',
          method = 'dml',
          dataset = row_number()),
-  mutate(read_csv(here('files/homemade', 'dml_grf.csv')), 
+  mutate(read_csv(here('files', 'dml_grf.csv')), 
          estimator = 'grf',
          method = 'dml',
          dataset = row_number()),
-  mutate(read_csv(here('files/homemade', 'dml_superlearner.csv')), 
+  mutate(read_csv(here('files', 'dml_superlearner.csv')), 
          estimator = 'superlearner',
          method = 'dml',
          dataset = row_number())
 ) %>%
   select(names(tmle_df))
 
-aipw_package_df <- read_csv(here('files/homemade', 'aipw_package.csv')) %>%
+aipw_package_df <- read_csv(here('files', 'aipw_package.csv')) %>%
   mutate(estimator = 'grf (pack.)',
          method = 'aipw')
 
-dml_package_df <- read_csv(here('files/homemade', 'dml_package.csv')) %>%
+dml_package_df <- read_csv(here('files', 'dml_package.csv')) %>%
   mutate(estimator = 'superlearner (pack.)',
          method = 'dml')
 
@@ -963,13 +961,14 @@ sim_results <- bind_rows(lm_df, psm_df, lin_df, ipw_df, gcomp_df, aipw_trunc_df,
 ```
 
 
+\renewcommand{\thesection}{S\arabic{section}}
+\renewcommand{\thepage}{S\arabic{page}}
 
-
-# (APPENDIX) Appendix {-}
+<!-- # (APPENDIX) Appendix {-} -->
 
 \newpage
 
-# LaLonde NSW Data
+<!-- # LaLonde NSW Data -->
 
 ```{r lalonde-packages, eval = F}
 library(grf)
@@ -1085,7 +1084,7 @@ lalonde_exp_models <- dml_grf_att(outcome = 're78',
 
 
 
-```{r lalonde, fig.height = 8, fig.cap = 'ATE estimates and 95-percent bootstrap standard error confidence intervals for Lalonde NSW data as provided by Dehejia and Wahba (1999), with CPS and PSID comparison groups. Standard errors shown in parentheses. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, not having a high school degree, and having no earnings in 1975. The "With 1974 earnings" estimates additionally include earnings in 1974 as a covariate, along with an indicator for having no earnings in 1974.'}
+```{r lalonde, eval = F, fig.height = 8, fig.cap = 'ATE estimates and 95-percent bootstrap standard error confidence intervals for Lalonde NSW data as provided by Dehejia and Wahba (1999), with CPS and PSID comparison groups. Standard errors shown in parentheses. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, not having a high school degree, and having no earnings in 1975. The "With 1974 earnings" estimates additionally include earnings in 1974 as a covariate, along with an indicator for having no earnings in 1974.'}
 # lalonde_means <- read_csv(here('files', 'lalonde_means.csv'))
 
 lalonde_results <- sim_results %>%
@@ -1131,24 +1130,24 @@ ggsave(here('draft/figures', 'lalonde.png'), width = 18,  height = 8, dpi = 1200
 ```
 
 
-As another evaluation of these methods, I use data from LaLonde's [-@lalonde_1986_evaluating] study of the National Supported Work Demonstration (NSW), as provided by @dehejia_1999_causal. Between March 1975 and July 1977, the NSW randomly provided training to disadvantaged workers. LaLonde used earnings in 1978 as the outcome of interest; comparing earnings in this year for treated and untreated workers allows an experimental estimate of the effect of the intervention. Restricting the sample to men, this study had `r nrow(filter(lalonde_exp, treat == T))` treated and `r nrow(filter(lalonde_exp, treat == F))` control participants. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, and not having a high school degree. Following @dehejia_1999_causal, I add a variable indicating whether each respondent's earnings in 1975 was $0 -- i.e., they were unemployed.     
+<!-- As another evaluation of these methods, I use data from LaLonde's [-@lalonde_1986_evaluating] study of the National Supported Work Demonstration (NSW), as provided by @dehejia_1999_causal. Between March 1975 and July 1977, the NSW randomly provided training to disadvantaged workers. LaLonde used earnings in 1978 as the outcome of interest; comparing earnings in this year for treated and untreated workers allows an experimental estimate of the effect of the intervention. Restricting the sample to men, this study had `r nrow(filter(lalonde_exp, treat == T))` treated and `r nrow(filter(lalonde_exp, treat == F))` control participants. Covariates include age, education in years of schooling, earnings in 1975, and dichotomous variables for Black and Hispanic race, married, and not having a high school degree. Following @dehejia_1999_causal, I add a variable indicating whether each respondent's earnings in 1975 was $0 -- i.e., they were unemployed.      -->
 
-LaLonde compared these experimental estimates to control samples drawn from the Panel Study of Income Dynamics (PSID) and Westat's Matched Current Population Survey-Social Security Administration File (CPS). The PSID-1 sample (*n* = `r nrow(lalonde_psid1_controls)`) contains all male household heads under 55 who did not classify themselves as retired in 1975, and the PSID-3 sample (*n* = `r nrow(lalonde_psid3_controls)`) further restricts this to men who were not working in the spring of 1976 or 1975. The CPS-1 sample (*n* = `r nrow(lalonde_cps1_controls)`) includes all CPS males under 55, and CPS-3 (*n* = `r nrow(lalonde_cps3_controls)`) restricts this two those who were not working in March 1976 whose earnings in 1975 were below the poverty level. Restricting these observational samples gets closer to the group eligible for the NSW.  
+<!-- LaLonde compared these experimental estimates to control samples drawn from the Panel Study of Income Dynamics (PSID) and Westat's Matched Current Population Survey-Social Security Administration File (CPS). The PSID-1 sample (*n* = `r nrow(lalonde_psid1_controls)`) contains all male household heads under 55 who did not classify themselves as retired in 1975, and the PSID-3 sample (*n* = `r nrow(lalonde_psid3_controls)`) further restricts this to men who were not working in the spring of 1976 or 1975. The CPS-1 sample (*n* = `r nrow(lalonde_cps1_controls)`) includes all CPS males under 55, and CPS-3 (*n* = `r nrow(lalonde_cps3_controls)`) restricts this two those who were not working in March 1976 whose earnings in 1975 were below the poverty level. Restricting these observational samples gets closer to the group eligible for the NSW.   -->
 
-Following @dehejia_1999_causal, I present results for the original samples analyzed by @lalonde_1986_evaluating, but I also include results using a subsample of the experimental group that has 1974 earnings data available (`r nrow(filter(lalonde_exp_74, treat == T))` treated and `r nrow(filter(lalonde_exp_74, treat == F))` control participants) and include this additional covariate, along with an indicator variable for no earnings in 1974.  
+<!-- Following @dehejia_1999_causal, I present results for the original samples analyzed by @lalonde_1986_evaluating, but I also include results using a subsample of the experimental group that has 1974 earnings data available (`r nrow(filter(lalonde_exp_74, treat == T))` treated and `r nrow(filter(lalonde_exp_74, treat == F))` control participants) and include this additional covariate, along with an indicator variable for no earnings in 1974.   -->
 
-Results are presented in Figure \@ref(fig:lalonde), with a table in the Appendix (Table 
-\@ref(tab:lalonde-all)). Standard errors are based on 100 bootstrap samples. We first focus on the original LaLonde dataset, which did not include 1974 earnings. The "experimental" estimates provide a baseline for the comparison, suggesting that the program resulted in an earnings gain of about \$800. Some methods calculate widely different results for the experimental estimates, highlighting their instability. Echoing results from the simulations, methods that include logit models are particularly unstable.  
+<!-- Results are presented in Figure \@ref(fig:lalonde), with a table in the Appendix (Table  -->
+<!-- \@ref(tab:lalonde-all)). Standard errors are based on 100 bootstrap samples. We first focus on the original LaLonde dataset, which did not include 1974 earnings. The "experimental" estimates provide a baseline for the comparison, suggesting that the program resulted in an earnings gain of about \$800. Some methods calculate widely different results for the experimental estimates, highlighting their instability. Echoing results from the simulations, methods that include logit models are particularly unstable.   -->
 
-If selection on observables holds, then we should be able to recover experimental estimates from the non-experimental control groups. Most of the methods do not perform very well, estimating treatment effects with the wrong sign. The exception is in the PSID-3 sample, where 12 of the 17 methods estimate treatment effects with the correct (positive) sign. This sample is chosen to be closer to the experimental sample. 
+<!-- If selection on observables holds, then we should be able to recover experimental estimates from the non-experimental control groups. Most of the methods do not perform very well, estimating treatment effects with the wrong sign. The exception is in the PSID-3 sample, where 12 of the 17 methods estimate treatment effects with the correct (positive) sign. This sample is chosen to be closer to the experimental sample.  -->
 
-Including 1974 earnings data results in much better estimates with the observational control groups. OLS, PSM, G-computation (SuperLearner), AIPW (SuperLearner), TMLE (SuperLearner), and DML (OLS/logit) compute fairly stable estimates across the samples. On the other hand, the estimates produced by IPW (logit), IPW (GRF), IPW (SuperLearner), the Lin estimator, and DML (GRF) vary widely across samples.   
+<!-- Including 1974 earnings data results in much better estimates with the observational control groups. OLS, PSM, G-computation (SuperLearner), AIPW (SuperLearner), TMLE (SuperLearner), and DML (OLS/logit) compute fairly stable estimates across the samples. On the other hand, the estimates produced by IPW (logit), IPW (GRF), IPW (SuperLearner), the Lin estimator, and DML (GRF) vary widely across samples.    -->
 
-These results highlight the importance of selection on observables holding. Without including 1974 earnings as a covariate, it appears that selection on observables does not hold, as most methods provide highly inaccurate estimates with the wrong sign. Once 1974 earnings are included, most of the methods provide estimates much closer to the experimental values. 
+<!-- These results highlight the importance of selection on observables holding. Without including 1974 earnings as a covariate, it appears that selection on observables does not hold, as most methods provide highly inaccurate estimates with the wrong sign. Once 1974 earnings are included, most of the methods provide estimates much closer to the experimental values.  -->
 
-\newpage
+<!-- \newpage -->
 
-```{r lalonde-all}
+```{r lalonde-all, eval = F}
 # lalonde_results <- sim_results %>%
 #   mutate(set = ifelse(set == 'lalondeCPS-3 74', 'lalonde CPS-3 74', set),
 #          set = ifelse(set == 'lalondeCPS-3 original', 'lalonde CPS-3 original', set)) %>%
@@ -1209,154 +1208,6 @@ lalonde_results_df %>%
 
 \newpage
 
-# Replications with Fixed Effects
-
-The tables below provide estimates from the ASR replications presented in the main text, but with the addition of two other models. These implement methods proposed by @clarke_2024_double that incorporate individual or group fixed effects into DML. The authors' package, `XTDML`, builds on the `DoubleML` package. I use two of their procedures. First, correlated random effects (CRE) models explicitly models the correlation between the group-level components in both the treatment and outcome models. Second, the authors' "hybrid" model combines CRE with a within-group estimator that partials out group means from all variables, similar to the function of fixed effects in OLS.
-
-
-```{r rep-aksoy}
-readRDS(here('replication', 'aksoy_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = '{stars}. Covariates include GDP growth, population, turnout, number of parliamentary seats in province in Model 2 and 3; Models 3 also adjusts for the lagged value of the dependent variable (i.e., one election lagged Islamic votes); cluster robust standard errors are in parentheses. The AIPW (GRF) model does not drop incomplete observations.') %>%
-  huxtable::insert_row(c('Covariates', 'No', rep('Yes', 2)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Lagged dependent variable', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Election year fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Province fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-4):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-4), 2:4) %>%
-  huxtable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"') %>%
-  huxtable::set_width(.8) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
-
-# read_rds(here('replication', 'aksoy_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7:8, 1:4, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:4) %>%
-#   flextable::hline(9) %>%
-#   flextable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"')
-```
-
-\newpage
-
-```{r rep-biegert}
-readRDS(here('replication', 'biegert_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = '{stars}. With no control variables, Model 1 could not be estimated using DML with a SuperLearner. Model 2 adjusts for year (fixed effects in original model), height (cm), position, age at league entry, being Black, and NBA tenure. Model 3 adds controls for the previous year\'s average points per 36 minutes, average assists per 36 minutes, average rebounds per 36 minutes, minutes played, whether the team reached playoffs, the team\'s win percentage, and whether it was a big market team. Model 4 adds controls for current average points, average assists, and average rebounds per 36 minutes. Model 5 additionally controls for current minutes played, whether the team reaches the playoffs, the team win percentage, and whether it is a big market team. Model 6 adds controls for cumulative all-star nominations, average points per 36 minutes, average assists per 36 minutes, average rebounds per 36 minutes, minutes played, team reached playoffs rate, team win percentage, and big market team rate. Player clustered standard errors are in parentheses. None of the original models include player fixed effects. The AIPW (GRF) model does not drop incomplete observations.') %>%
-  huxtable::insert_row(c('Baseline confounders', 'No', rep('Yes', 5)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Prior situation + performance', rep('No', 2), rep('Yes', 4)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Current performance', rep('No', 3), rep('Yes', 3)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Current situation', rep('No', 4), rep('Yes', 2)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Cumul. AS + cumul. mediators', rep('No', 5), 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-5):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-5), 2:7) %>%
-  huxtable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"') %>%
-  huxtable::set_width(1) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
-
-
-# read_rds(here('replication', 'biegert_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7:11, 1:7, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:7) %>%
-#   flextable::padding(padding = 0, part = "all") %>% 
-#   flextable::autofit() %>%
-#   flextable::hline(12) %>%
-#   flextable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"')
-```
-
-\newpage
-
-```{r rep-nussio-ind}
-readRDS(here('replication', 'nussio_ind_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = "{stars}. Models estimate the effect of the log number of names that respondents know in their colonia (neighborhood) on whether they had ever participate in a lynching. Model 1 controls for the extent to which people trust others living in their neighborhood. Model 2 adds controls for education, age, female, number of light bulbs, and unemployment. Model 3 additionally controls for employment, being Catholic or non-religious, whether someone has participated in a fight, whether parents live in the colonia, trust in government, garbage on the street, and residential street block. Colonia clustered standard errors are in parentheses. Model 4 adds colonia fixed effects. The AIPW (GRF) model does not drop incomplete observations.") %>%
-  huxtable::insert_row(c('Colonia FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-2):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-2), 2:5) %>%
-  huxtable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"') %>%
-  huxtable::set_width(.8) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
-
-
-
-# read_rds(here('replication', 'nussio_ind_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7:8, 1:5, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:5) %>%
-#   flextable::hline(9) %>%
-#   flextable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"')
-```
-
-\newpage
-
-```{r rep-nussio-ag}
-readRDS(here('replication', 'nussio_ag_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = "{stars}. Models estimate the effect of neighborly cooperation -- operationalized by the proportion of respondents who think that most neighbors help each other in problems related to electric lighting -- on the log municipal lynching rate. Model 1 adds controls for the proportion of respondents in a municipality that trust their neighbors. Model controls for population, area in square kilometers, poverty rate, Gini coefficient, share indigenous people, non-religious population, homicide rate, and robbery rate. Model 3 adds controls for household victimization and trust in army. Model 4 adds estado (state) fixed effects. Municipality clustered standard errors are in paratheses. The AIPW (GRF) model does not drop incomplete observations.") %>%
-  huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Estado FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Estado clustered SE', 'Yes', 'Yes', 'Yes', 'No'), after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-3):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-3), 2:5) %>%
-  huxtable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"') %>%
-  huxtable::set_width(.8) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
-
-# read_rds(here('replication', 'nussio_ag_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7:9, 1:5, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:5) %>%
-#   flextable::hline(10) %>%
-#   flextable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"')
-```
-
-\newpage
-
-```{r rep-nussio-ne}
-readRDS(here('replication', 'nussio_ne_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = "{stars}. Models estimate the effect of the Puebla earthquake on September 19, 2017, on the number of lynching events. Data is a panel of Mexican municipalities from 2000 to 2020. Specific independent variables include having an earthquake within 250 km (Models 1 and 2) or having earthquake damage (Models 3 and 4), each interacted with a post-2017 indicator variable. Municipality clustered standard errors are in parentheses. The original models include two-way fixed effects for year and municipality. Model 2 and 4 additionally control for homicides, robberies, kidnappings, and infant mortality. Machine learning models control for year. All models drop incomplete observations; Models 1, and 3 have 51,597 observations, while Models 2, and 4 have 17,225 observations. Due to complications with continuous treatment effects, I do not present the original Models 5 and 6, where the independent variable was distance from the earthquake.") %>%
-  huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes'), 
-                       after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-1):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-1), 2:5) %>%
-  huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
-  huxtable::set_width(.8) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
-
-
-
-# Final table
-# huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1),
-#                                   list(m2, grf_out2, dml_out2),
-#                                   list(m3, grf_out3, dml_out3),
-#                                   list(m4, grf_out4, dml_out4),
-#                                   list(m5, grf_out5, dml_out5),
-#                                   list(m6, grf_out6, dml_out6)),
-#                              tidy = F),
-#                  statistics = NA) %>%
-#   huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes', 'No', 'Yes'), 
-#                        after = nrow(.) - 1) %>%
-#   huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
-
-# read_rds(here('replication', 'nussio_ne_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7, 1:7, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:7) %>%
-#   flextable::hline(8) %>%
-#   flextable::padding(padding = 0, part = "all") %>% 
-#   flextable::autofit() %>%
-#   flextable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"')
-```
-
-
-\newpage
 
 # Tables of Results
 
@@ -1440,6 +1291,155 @@ sim_results %>%
                     caption = 'Sample size: Results of Monte Carlo simulations using dataset 7 from Dorie et al. (2019) with varying sample sizes, 20 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
   kable_styling(latex_options = c("hold_position")) #'repeat_header')) 
 ```
+
+\newpage
+
+# Replications with Fixed Effects
+
+The tables below present estimates from the *ASR* replications discussed in the main text, but with the addition of two other models implementing methods proposed by @clarke_2024_double that incorporate individual or group fixed effects into DML. The authors' package, `XTDML`, builds on the `DoubleML` package. I use two of their procedures. First, correlated random effects (CRE) models explicitly model the correlation between the group-level components in both the treatment and outcome models. Second, the authors' "hybrid" model combines CRE with a within-group estimator that partials out group means from all variables, similar to the mechanics of fixed effects in OLS. I present results using fixed effects for each model, whether or not the original model uses fixed effects. The original models from @aksoy_2022_commitment use fixed effects throughout. @biegert_2023_they do not employ fixed effects in any of their original models. @nussio_2024_dark uses fixed effects in the fourth model in Tables 2 and 4 and in all models in Table 5.
+
+
+```{r rep-aksoy}
+readRDS(here('replication', 'aksoy_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = '{stars}. Covariates include GDP growth, population, turnout, number of parliamentary seats in province in Model 2 and 3; Models 3 also adjusts for the lagged value of the dependent variable (i.e., one election lagged Islamic votes); cluster robust standard errors are in parentheses. The AIPW (GRF) model does not drop incomplete observations.') %>%
+  huxtable::insert_row(c('Covariates', 'No', rep('Yes', 2)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Lagged dependent variable', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Election year fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Province fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-4):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-4), 2:4) %>%
+  huxtable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"') %>%
+  huxtable::set_width(.8) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+# read_rds(here('replication', 'aksoy_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7:8, 1:4, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:4) %>%
+#   flextable::hline(9) %>%
+#   flextable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"')
+```
+
+\newpage
+
+```{r rep-biegert}
+readRDS(here('replication', 'biegert_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = '{stars}. With no control variables, Model 1 could not be estimated using DML with a SuperLearner. Model 2 adjusts for year (fixed effects in original model), height (cm), position, age at league entry, being Black, and NBA tenure. Model 3 adds controls for the previous year\'s average points per 36 minutes, average assists per 36 minutes, average rebounds per 36 minutes, minutes played, whether the team reached playoffs, the team\'s win percentage, and whether it was a big market team. Model 4 adds controls for current average points, average assists, and average rebounds per 36 minutes. Model 5 additionally controls for current minutes played, whether the team reaches the playoffs, the team win percentage, and whether it is a big market team. Player clustered standard errors are in parentheses. None of the original models includes player fixed effects. The AIPW (GRF) model does not drop incomplete observations.') %>%
+  huxtable::insert_row(c('Baseline confounders', 'No', rep('Yes', 4)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Prior situation + performance', rep('No', 2), rep('Yes', 3)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Current performance', rep('No', 3), rep('Yes', 2)), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Current situation', rep('No', 4), rep('Yes', 1)), after = nrow(.) - 1) %>%
+  # huxtable::insert_row(c('Cumul. AS + cumul. mediators', rep('No', 5), 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-4):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-4), 2:6) %>%
+  huxtable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"') %>%
+  huxtable::set_width(1) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+
+# read_rds(here('replication', 'biegert_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7:11, 1:7, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:7) %>%
+#   flextable::padding(padding = 0, part = "all") %>% 
+#   flextable::autofit() %>%
+#   flextable::hline(12) %>%
+#   flextable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"')
+```
+
+\newpage
+
+```{r rep-nussio-ind}
+readRDS(here('replication', 'nussio_ind_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = "{stars}. Data come from a representative survey of residents of Mexico City conducted in February 2022. Models estimate the effect of the log number of names that respondents know in their colonia (neighborhood) on whether they had ever participate in a lynching. Model 1 controls for the extent to which people trust others living in their neighborhood. Model 2 adds controls for education, age, female, number of light bulbs, and unemployment. Model 3 additionally controls for employment, being Catholic or non-religious, whether someone has participated in a fight, whether parents live in the colonia, trust in government, garbage on the street, and residential street block. Colonia clustered standard errors are in parentheses. Model 4 adds colonia fixed effects. The AIPW (GRF) model does not drop incomplete observations.") %>%
+  huxtable::insert_row(c('Colonia FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-2):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-2), 2:5) %>%
+  huxtable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"') %>%
+  huxtable::set_width(.8) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+
+
+# read_rds(here('replication', 'nussio_ind_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7:8, 1:5, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:5) %>%
+#   flextable::hline(9) %>%
+#   flextable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"')
+```
+
+\newpage
+
+```{r rep-nussio-ag}
+readRDS(here('replication', 'nussio_ag_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = "{stars}. Models estimate the effect of neighborly cooperation -- operationalized by the proportion of respondents who think that most neighbors help each other in problems related to electric lighting -- on the log municipal lynching rate. Model 1 adds controls for the proportion of respondents in a municipality that trust their neighbors. Model controls for population, area in square kilometers, poverty rate, Gini coefficient, share indigenous people, non-religious population, homicide rate, and robbery rate. Model 3 adds controls for household victimization and trust in army. Model 4 adds estado (state) fixed effects. Municipality clustered standard errors are in paratheses. The AIPW (GRF) model does not drop incomplete observations.") %>%
+  huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Estado FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
+  huxtable::insert_row(c('Estado clustered SE', 'Yes', 'Yes', 'Yes', 'No'), after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-3):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-3), 2:5) %>%
+  huxtable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"') %>%
+  huxtable::set_width(.8) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+# read_rds(here('replication', 'nussio_ag_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7:9, 1:5, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:5) %>%
+#   flextable::hline(10) %>%
+#   flextable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"')
+```
+
+\newpage
+
+```{r rep-nussio-ne}
+readRDS(here('replication', 'nussio_ne_rep.RDS')) %>%
+  huxtable::huxreg(statistics = NA,
+                   note = "{stars}. Models estimate the effect of the Puebla earthquake on September 19, 2017, on the number of lynching events. Data is a panel of Mexican municipalities from 2000 to 2020. Specific independent variables include having an earthquake within 250 km (Models 1 and 2) or having earthquake damage (Models 3 and 4), each interacted with a post-2017 indicator variable. Municipality clustered standard errors are in parentheses. The original models include two-way fixed effects for year and municipality. Model 2 and 4 additionally control for homicides, robberies, kidnappings, and infant mortality. Machine learning models control for year. All models drop incomplete observations; Models 1, and 3 have 51,597 observations, while Models 2, and 4 have 17,225 observations. Due to complications with continuous treatment effects, I do not present the original Models 5 and 6, where the independent variable was distance from the earthquake.") %>%
+  huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes'), 
+                       after = nrow(.) - 1) %>%
+  huxtable::set_top_border((nrow(.)-1):(nrow(.)-1), value = 0) %>%
+  huxtable::set_top_border((nrow(.)-1), 2:5) %>%
+  huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
+  huxtable::set_width(.8) %>%
+  huxtable::set_all_padding(0) %>%
+  huxtable::set_latex_float('h!')
+
+
+
+# Final table
+# huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1),
+#                                   list(m2, grf_out2, dml_out2),
+#                                   list(m3, grf_out3, dml_out3),
+#                                   list(m4, grf_out4, dml_out4),
+#                                   list(m5, grf_out5, dml_out5),
+#                                   list(m6, grf_out6, dml_out6)),
+#                              tidy = F),
+#                  statistics = NA) %>%
+#   huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes', 'No', 'Yes'), 
+#                        after = nrow(.) - 1) %>%
+#   huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
+
+# read_rds(here('replication', 'nussio_ne_tab.RDS')) %>%
+#   huxtable::as_flextable() %>%
+#   flextable::hline(7, 1:7, border = officer::fp_border(width = 0)) %>%
+#   flextable::hline(7, 2:7) %>%
+#   flextable::hline(8) %>%
+#   flextable::padding(padding = 0, part = "all") %>% 
+#   flextable::autofit() %>%
+#   flextable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"')
+```
+
 
 \newpage
 
