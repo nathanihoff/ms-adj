@@ -50,7 +50,7 @@ title: "Double Robust, Flexible Adjustment Methods for Causal Inference: An Over
 
 # thanks: "I deeply thank my Statistics MS committee -- Chad Hazlett, Jennie E. Brand, and Onyebuchi A. Arah -- for their extensive suggestions and advice on previous drafts. I would also like to thank the members of UCLA's Practical Causal Inference Lab, UCLA's Inequality Data Science Lab, and participants at the 2023 American Sociological Association's Annual Meeting, at the 2024 PolMeth Summer Meeting, and at the 2024 All-UC Demography Conference for their feedback on previous versions of this paper."
 
-abstract: "Double robust methods for flexible covariate adjustment in causal inference have proliferated in recent years. Despite their apparent advantages, these methods are rarely used by social scientists. It is also unclear whether these methods actually outperform more traditional methods in finite samples. This paper has two aims: It is a guide to some of the latest methods in double robust, flexible covariate adjustment using machine learning, and it compares these methods to more traditional statistical methods and flexible \"single robust\" methods. It does this by using both simulated data where the treatment effect estimate is known, and then by replicating some prominent articles in sociology that use simpler methods. Double robust methods covered include Augmented Inverse Probability Weighting (AIPW), Targeted Maximum Likelihood Estimation (TMLE), and Double/Debiased Machine Learning (DML). Results suggest that some of these methods do outperform traditional methods in a wide range of simulations, but only slightly. In particular, the top performers are TMLE and AIPW in conjunction with flexible machine learning estimators. But G-computation with the same flexible estimators obtains almost identical results, and simple regression methods have only slightly higher bias and are much more computationally efficient. In the article replications, the application of double robust methods substantively changes some, but not all, of the results, highlighting the importance of comparing performance from multiple estimators."
+abstract: "Double robust methods for flexible covariate adjustment in causal inference have proliferated in recent years. Despite their apparent advantages, these methods are rarely used by social scientists. It is also unclear whether these methods actually outperform more traditional methods in finite samples. This paper has two aims: It is a guide to some of the latest methods in double robust, flexible covariate adjustment using machine learning, and it compares these methods to more traditional statistical methods and flexible \"single robust\" methods using simulated, cross-sectional data where the treatment effect is known. Double robust methods covered include Augmented Inverse Probability Weighting (AIPW), Targeted Maximum Likelihood Estimation (TMLE), and Double/Debiased Machine Learning (DML). Results suggest that some of these methods do outperform traditional methods in a wide range of simulations, but not dramatically. The top performers are TMLE and AIPW in conjunction with flexible machine learning estimators, but G-computation with the same flexible estimators obtains almost identical results, and standard regression methods have only slightly higher bias. Researchers should opt for estimators that are robust to heterogeneous treatment effects, regardless of whether they are double robust."
 
 ---
 
@@ -65,6 +65,11 @@ library(knitr)
 library(kableExtra)
 library(here)
 library(patchwork)
+library(DoubleML)
+library(mlr3)
+library(mlr3pipelines)
+library(mlr3learners)
+library(mlr3extralearners)
 library(haven)
 library(tidyverse)
 
@@ -535,6 +540,110 @@ superlearner_dml <- function(y_I, d_I, x_I, y_I_c, d_I_c, x_I_c,
   ))
 }
 
+
+lm_lin_continuous <- function (formula, covariates, data, weights, subset, clusters, 
+  se_type = NULL, ci = TRUE, alpha = 0.05, return_vcov = TRUE, 
+  try_cholesky = FALSE) 
+{
+  if (length(all.vars(f_rhs(formula))) > 1) {
+    stop("The `formula` argument, `", format(formula), "`, must only have the ", 
+      "treatment variable on the right-hand side of the formula. Covariates ", 
+      "should be specified in the `covariates` argument like so:\n`covariates = ", 
+      paste0("~ ", paste(all.vars(f_rhs(formula))[-1], 
+        sep = " + ")), "`.", "\n\n See ?lm_lin.")
+  }
+  if (!inherits(covariates, "formula")) {
+    stop("The `covariates` argument must be specified as a formula:\n", 
+      "You passed an object of class ", class(covariates))
+  }
+  cov_terms <- terms(covariates)
+  if (attr(cov_terms, "response") != 0) {
+    stop("Must not specify a response variable in `covariates`` formula.\n", 
+      "`covariates` must be a right-sided formula, such as '~ x1 + x2 + x3'")
+  }
+  if (length(attr(cov_terms, "order")) == 0) {
+    stop("`covariates` must have a variable on the right-hand side, not 0 or 1")
+  }
+  full_formula <- update(formula, reformulate(c(".", labels(cov_terms))))
+  datargs <- enquos(formula = full_formula, weights = weights, 
+    subset = subset, cluster = clusters)
+  data <- enquo(data)
+  model_data <- clean_model_data(data = data, datargs)
+  outcome <- as.matrix(model_data$outcome)
+  n <- nrow(outcome)
+  design_matrix <- model_data$design_matrix
+  weights <- model_data$weights
+  cluster <- model_data$cluster
+  has_intercept <- attr(terms(formula), "intercept")
+  treat_col <- which(attr(design_matrix, "assign") == 1)
+  treatment <- design_matrix[, treat_col, drop = FALSE]
+  design_mat_treatment <- colnames(design_matrix)[treat_col]
+  # if (any(!(treatment %in% c(0, 1)))) {
+  #   vals <- sort(unique(treatment))
+  #   if (has_intercept) 
+  #     vals <- vals[-1]
+  #   n_treats <- length(vals)
+  #   names(vals) <- paste0(colnames(design_matrix)[treat_col], 
+  #     vals)
+  #   treatment <- outer(drop(treatment), vals, function(x, 
+  #     y) as.numeric(x == y))
+  # }
+  demeaned_covars <- design_matrix[, setdiff(colnames(design_matrix), 
+    c(design_mat_treatment, "(Intercept)")), drop = FALSE]
+  if (is.numeric(weights)) {
+    center <- apply(demeaned_covars, 2, weighted.mean, weights)
+  }
+  else {
+    center <- colMeans(demeaned_covars)
+  }
+  demeaned_covars <- sweep(demeaned_covars, 2, center)
+  original_covar_names <- colnames(demeaned_covars)
+  colnames(demeaned_covars) <- paste0(ifelse(grepl("\\:|(^.+\\()", 
+    colnames(demeaned_covars)), paste0("(", colnames(demeaned_covars), 
+    ")"), colnames(demeaned_covars)), "_c")
+  n_treat_cols <- ncol(treatment)
+  n_covars <- ncol(demeaned_covars)
+  n_int_covar_cols <- n_covars * (n_treat_cols)
+  interacted_covars <- matrix(0, nrow = n, ncol = n_int_covar_cols)
+  interacted_covars_names <- character(n_int_covar_cols)
+  for (i in 1:n_covars) {
+    covar_name <- colnames(demeaned_covars)[i]
+    cols <- (i - 1) * n_treat_cols + (1:n_treat_cols)
+    interacted_covars[, cols] <- treatment * demeaned_covars[, 
+      i]
+    interacted_covars_names[cols] <- paste0(colnames(treatment), 
+      ":", covar_name)
+  }
+  colnames(interacted_covars) <- interacted_covars_names
+  if (has_intercept) {
+    X <- cbind(matrix(1, nrow = n, ncol = 1, dimnames = list(NULL, 
+      "(Intercept)")), treatment, demeaned_covars, interacted_covars)
+  }
+  else {
+    if (n_treat_cols == 1) {
+      X <- cbind(treatment, demeaned_covars, interacted_covars)
+    }
+    else {
+      X <- cbind(treatment, interacted_covars)
+    }
+  }
+  return_list <- lm_robust_fit(y = outcome, X = X, weights = weights, 
+    cluster = cluster, ci = ci, se_type = se_type, alpha = alpha, 
+    return_vcov = return_vcov, try_cholesky = try_cholesky, 
+    has_int = has_intercept, iv_stage = list(0))
+  return_list <- lm_return(return_list, model_data = model_data, 
+    formula = formula)
+  return_list[["scaled_center"]] <- center
+  setNames(return_list[["scaled_center"]], original_covar_names)
+  return_list[["call"]] <- match.call()
+  return(return_list)
+}
+
+environment(lm_lin_continuous) <- asNamespace('estimatr')
+assignInNamespace("lm_lin", lm_lin_continuous, ns = "estimatr")
+
+
+
 ## Functions using double robust packages ####
 aipw_sim <- function(dat, seed = 185){
 
@@ -640,8 +749,6 @@ tmle_sim <- function(dat, seed = 185){
 }
 
 dml_sim <- function(dat, seed = 185){
-  library(mlr3)
-  library(mlr3learners)
   
   start_time <- Sys.time()
   
@@ -1289,26 +1396,26 @@ sims <- sims_main %>% append(sims_small) %>% append(sims_large) %>% append(sims_
 
 # Introduction
 
-In causal inference, functional form misspecification of underlying models can bias estimates of treatment effects [@hernan_2020_causal; @morgan_2015_counterfactuals]. There have been two important developments that attempt to overcome this. First, methodologists have developed machine learning methods that allow greater flexibility in estimation, adjusting for covariates in data-driven, complex ways [@balzer_2021_invited; @brand_2023_recent]. The second development is double robust methods [@bang_2005_doubly; @kang_2007_demystifying], which estimate two models: one for treatment exposure and another for the outcome. These models are robust to misspecification of either one of these "nuisance" models.  
+In causal inference, functional form misspecification of underlying models can bias estimates of treatment effects [@hernan_2020_causal; @morgan_2015_counterfactuals]. There have been two important advances that attempt to overcome this. First, methodologists have developed machine learning methods that allow greater flexibility in estimation, adjusting for covariates in data-driven, complex ways [@balzer_2021_invited; @brand_2023_recent]. The second development is double robust methods [@bang_2005_doubly; @kang_2007_demystifying], which estimate two models: one for treatment exposure and another for the outcome. These models are robust to misspecification of either one of these "nuisance" models.  
 
 Methods unifying these two developments have proliferated. These double robust methods for flexible covariate adjustment use machine learning methods to adapatively model the data generating processes. These models purportedly overcome the shortcomings of both traditional statistical methods and machine learning methods. Common statistical methods -- such as OLS regression and matching on propensity scores estimated from logistic regression -- have rigid functional form assumptions and fail to calculate stable estimates when the number of covariates is large relative to the number of observations. Machine learning methods, on the other hand, are often difficult to interpret. They can also suffer from overfitting, where the flexibility of the model becomes a weakness and predictions out-of-sample are poor, yet efforts to correct for overfitting can introduce regularization bias [@hastie_2009_elements]. Double robust methods with machine learning dispose of the constricting functional form assumptions of common statistical methods, and they correct for the regularization bias of flexible machine learning methods. They can also accommodate large numbers of covariates and produce easily interpretable treatment effect estimates. Despite their apparent advantages, these methods remain rarely used by social scientists. Part of the barrier has been lack of familiarity with these methods. It has also been unclear how these methods compare, or whether such methods actually perform better than traditional methods in finite samples.  
 
 This paper makes advances on these fronts. First, it is a guide to some of the latest methods in double robust, flexible covariate adjustment for causal inference, explaining the methods to a social scientist audience. Methods covered include Augmented Inverse Probability Weighting (AIPW), Targeted Maximum Likelihood Estimation (TMLE), and Double or Debiased Machine Learning (DML). This paper reviews the theory behind these methods as well as simple R implementations. 
 
-Second, this paper evaluates these methods. They are tested on simulations from @dorie_2019_automated, which cover a range of data-generating processes where ignorability holds -- i.e., there are no unmeasured confounders. In the simulations, double robust methods are compared to "single robust" methods (i.e., ones with one nuisance model). These include traditional or simpler statistical methods commonly used by social scientists: ordinary least squares (OLS) regression, matching on propensity scores estimated from logistic regression (PSM), and inverse probability weighting (IPW). They are also compared to two more flexible methods that may overcome the misspecification issues that double robust methods aim to overcome: G-computation and the Lin estimator [@lin_2013_agnostic]. Lastly, I use two of the double robust methods to replicate analyses from three recent *American Sociological Review* (*ASR*) papers that use OLS or logistic regression to estimate causal effects.  
+Second, this paper evaluates these methods, testing them on simulations from @dorie_2019_automated that cover a range of data-generating processes where ignorability holds -- meaning there are no unmeasured confounders. In the simulations, double robust methods are compared to "single robust" methods (i.e., ones with one nuisance model), including traditional or simpler statistical methods commonly used by social scientists: ordinary least squares (OLS) regression, matching on propensity scores estimated from logistic regression (PSM), and inverse probability weighting (IPW). They are also compared to two more flexible methods that may overcome the misspecification issues that motivate double robust methods: G-computation and the Lin estimator. G-computation models the outcome in separate models for treated and untreated units, then predicts the average difference between these for the full sample [@robins_1986_new]. The Lin estimator interacts treatment with mean-centered covariates in an OLS regression [@lin_2013_agnostic].  
 
-Results from simulations where ignorability holds show that some double robust methods outperform traditional statistical methods, but only slightly. AIPW and TMLE perform the best, at least when used in conjunction with flexible machine learning algorithms, while DML (in its partially linear form) does slightly worse than traditional methods. G-computation with flexible machine learning performs as well as the lowest-error double robust methods. Despite their lower average error, the computation times of these flexible methods are high. With its still relatively low error and much faster computation time, OLS remains a sensible choice as an estimator, and the Lin estimator -- which is as quick as standard OLS regression -- performs only slightly worse than the best double robust methods. In the *ASR* replications, double robust methods provide similar coefficients for most, but not all, of the analyses. In some cases, statistical significance is lost, and in a minority of cases the coefficient sign changes. These replications highlight the importance of testing the robustness of quantitative results by comparing multiple methods and estimators.  
+Results show that some double robust methods outperform traditional statistical methods, but not dramatically. AIPW and TMLE perform the best, at least when used in conjunction with flexible machine learning algorithms, while DML does slightly worse than traditional methods, at least in its partially linear form that is not robust to heterogeneous treatment effects. G-computation with flexible machine learning performs as well as the lowest-error double robust methods. With its still relatively low error and much faster computation time, OLS remains a sensible choice as an estimator, and the Lin estimator -- which is as quick as standard OLS regression -- performs only slightly worse than the top machine learning methods. Due to the strong performance of G-computation and the Lin estimator, results suggest that using estimators that are robust to heterogeneous treatment effects may be more important than double robustness.  
 
-The next section reviews literature on and motivation for double robust methods. This is followed by an introduction of notation and assumptions, while the following section gives an overview of the double robust methods covered in this paper. I next present results of the simulations and replications, then conclude. In the Appendix, I provide simple R code to implement the three double robust methods.
+The next section reviews literature on and motivation for double robust methods. This is followed by an introduction of notation and assumptions, while the following section gives an overview of the double robust methods covered in this paper. I next present results of the simulations, then conclude. In the Appendix, I provide simple R code to implement the three double robust methods.
 
 <!-- Section \@ref(motivation) reviews literature on and motivation for double robust methods. Section \@ref(conceptual-overview) introduces notation and assumptions, while Section \@ref(overview-of-techniques) gives an overview of the double robust methods covered in this paper, along with example R code. Sections \@ref(simulations) and \@ref(replications) present results of the simulations and replications, respectively, and Section \@ref(conclusion) concludes. -->
 
 
-# Motivation
+# Background
 
 ## Literature Review
 
-Although previous work has compared different methods for covariate adjustment, there has not yet been a thorough comparison and evaluation of the recent and popular double robust methods of AIPW, TMLE, and DML for a social scientist audience. 
+<!-- Although previous work has compared different methods for covariate adjustment, there has not yet been a thorough comparison and evaluation of the recent and popular double robust methods of AIPW, TMLE, and DML for a social scientist audience.  -->
 
 Although some introductions to double robust methods exist, they do not discuss them in the context of covariate adjustment for causal inference, or their treatment is overly technical for a social scientist audience. For example, @kang_2007_demystifying provide an an excellent overview and evaluation of double robust methods, but in the context of missing data, and the authors consider AIPW but not TMLE or DML. @bang_2005_doubly introduce double robust models for both causal inference and missing data, but their treatment is rather technical, and they only discuss AIPW. @lundberg_2022_researcher provide brief schematic overviews of double robust methods for a social scientist audience, but they do not evaluate these methods.
 
@@ -1381,9 +1488,9 @@ The first three assumptions are embedded in the potential outcomes notation. Ass
 
 
 # Overview of Techniques  
-Each of the methods reviewed in this paper can be used with a variety of estimation techniques, including both traditional statistical methods and flexible machine learning methods. Each involves a model for the outcome and another for the treatment exposure, but choice of estimator for these two models is left to the discretion of the user. Double robust methods are distinct in the ways these estimated models relate and are combined into a final estimate of the desired estimand.  
+Each of the methods reviewed in this paper can be used with a variety of estimation techniques, including both traditional statistical methods and flexible machine learning algorithms. Each involves a model for the outcome and another for the treatment exposure, but choice of estimator for these two models is left to the discretion of the user. Double robust methods are distinct in the ways these estimated models relate and are combined into a final estimate of the desired estimand.  
 
-This section provides some intuition for the mathematical theory behind each method. In the Appendix, I provide R code to simply implement these methods. This is the code used to evaluate these methods later in this paper, and it represents basic implementations of these methods. However, for researchers wishing to put these methods into practice, using a dedicated R packages for each method is probably a better idea. These packages have many flexible options, such as accounting for complex survey design, targeting estimands besides the ATE, and integrating with a variety of estimation techniques. 
+This section provides some intuition for the mathematical theory behind each method. In the Appendix, I provide R code to simply implement these methods. This is the code used to evaluate these methods later in this paper, and it represents basic implementations of these methods. However, for researchers wishing to put these methods into practice, using a dedicated R package for each method is probably a better idea. These packages have many flexible options, such as accounting for complex survey design, targeting estimands besides the ATE, and integrating with a variety of estimation techniques.^[In the Supplementary Material full tables of results, I present the results of using two packages to estimate the full set of simulations shown below. These include AIPW in conjunction with generalized random forests (GRF) using the `grf` package [@tibshirani_2024_grf] and a partially linear model for DML with a SuperLearner that, like below, harnesses ensemble learning with GLM, glmnet, and XGBoost, using the `DoubleML` package [@bach_2022_doubleml]. Results are fairly similar to my own R code, though computation time is markedly faster.] 
 
 <!-- In the Supplementary Material, Table \@ref(tab:packages) suggests packages for each method.   -->
 
@@ -1409,7 +1516,7 @@ $$\begin{aligned}
 
 ## Targeted Maximum Likelihood Estimation (TMLE)
 
-Extending and improving previous double robust methods, @vanderlaan_2006_targeted first proposed TMLE using a parametric framework and the efficient influence curve [@hines_2022_demystifying] to obtain estimates and standard errors. Mark van der Laan has gone on to collaborate on both a gentle introduction [@gruber_2009_targeted], two textbooks [@vanderlaan_2011_targeted; @vanderlaan_2018_targeted], and an R package [@gruber_2012_tmle] for implementing the method. @schuler_2017_targeted and @luque-fernandez_2018_targeted provide introductions for epidemiologists.
+Extending and improving previous double robust methods, @vanderlaan_2006_targeted first proposed TMLE using a parametric framework and the efficient influence curve [@hines_2022_demystifying] to obtain estimates and standard errors. Van der Laan has gone on to collaborate on both a gentle introduction [@gruber_2009_targeted], two textbooks [@vanderlaan_2011_targeted; @vanderlaan_2018_targeted], and an R package [@gruber_2012_tmle] for implementing the method. @schuler_2017_targeted and @luque-fernandez_2018_targeted provide introductions for epidemiologists.
 
 TMLE begins by estimating the relevant part of the data-generating distribution $P(Y)$, i.e. the conditional density $Q = P(Y \mid X)$. It next estimates the exposure model. Although any estimation method can be used for these steps, the originators of the method suggest using a "SuperLearner," i.e. ensemble learning with cross-validation [@vanderlaan_2007_super]. Next, the exposure model is used to calculate a "clever covariate," which is similar to an IPW. The coefficient for this clever covariate is estimated using maximum likelihood -- whence the "MLE" in "TMLE." Finally, the estimate of $Q$ is updated in a function involving the clever covariate. This process can be iterated, but usually one iteration is enough. The estimate of the distribution $Q$ can be used to calculate the estimand of interest.  
 
@@ -1424,7 +1531,7 @@ H_{1i}(D=1, \mathbf X = \mathbf x_i) = \frac{d_i}{\hat \pi (\mathbf x_i)}.
 
 In the next step, we estimate fluctuation parameters $\epsilon = (\epsilon_0, \epsilon_1)$ through maximum likelihood of the following logistic regression with fixed intercept $\text{logit}(\mu_{di})$: 
 <!-- $$E(Y=1 \mid D, \mathbf X) = \text{logit}(\mu_{di}) + \epsilon H_{di}$$ -->
-$$\text{logit}[E(Y=1 \mid D, \mathbf X)] = \text{logit}(\hat \mu_{di}) + \epsilon_0 H_{0i} + \epsilon_1 H_{1i}$$
+$$\text{logit}[E(Y=1 \mid D, \mathbf X)] = \text{logit}(\hat \mu_{di}) + \epsilon_0 H_{0i} + \epsilon_1 H_{1i}.$$
 
 Here we are assuming that $Y$ is a dichotomous variable taking the values of 0 or 1; the method is extended to continuous outcomes simply by normalizing the value of $Y$ to fall between 0 and 1. Then we generate updated ("targeted") estimates of potential outcomes:
 $$\begin{aligned}
@@ -1479,32 +1586,30 @@ $$\begin{aligned}
 - \frac{1}{N} \sum_{i=1}^N \left( \frac{(1-D_i)(Y_i - \hat \mu_0 (X_i))}{1-\hat \pi(X_i)} + \hat \mu_0(X_i) \right)
 \end{aligned}$$
 
-For each individual in the sample, this estimator calculates two quantities:
-
-- The treated potential outcome
+For each individual in the sample, this estimator calculates two quantities: The treated potential outcome
 
 \begin{equation}
 \hat Y_{1i} = \frac{D_i(Y_i - \hat \mu_1 (X_i))}{\hat \pi (X_i)} + \hat \mu_1(X_i)
 (\#eq:treated-aipw)
 \end{equation}
 
-- The control potential outcome
+and the control potential outcome
 
 \begin{equation}
-\hat Y_{0i} = \frac{(1-D_i)(Y_i - \hat \mu_0 (X_i))}{1-\hat \pi(X_i)} + \hat \mu_0(X_i)
+\hat Y_{0i} = \frac{(1-D_i)(Y_i - \hat \mu_0 (X_i))}{1-\hat \pi(X_i)} + \hat \mu_0(X_i).
 (\#eq:control-aipw)
 \end{equation}
 
 Let's focus on the treated model, Equation \@ref(eq:treated-aipw). First, assume that the outcome model $\mu_1(X_i)$ is *correctly* specified and the exposure model $\pi(X_i)$ is *incorrectly* specified. Let's also assume (for now) that we're dealing with a treated unit, i.e. $D_i = 1$. Then
 $$E[\hat \mu_1 (X_i)] = E[Y_1 \mid X_i].$$
-This means that
-$$E[Y_i - \hat \mu_1(X_i)] = 0,$$
-and hence
+This means that the model for the outcome and the observed outcome for this treated unit are equal in expectation, so
+$$E[Y_i - \hat \mu_1(X_i)] = 0.$$
+Plugging into Equation \@ref(eq:treated-aipw), we get 
 $$E[\hat Y_{1i}] = 0 + \hat \mu_1(X_i) = \hat \mu_1(X_i).$$
-So the model relies *only* on the outcome model. The incorrectly specified exposure model completely disappears from the equation. If we're dealing with a control unit ($D_i=0$), we get the same result:
+So the model relies *only* on the outcome model. The incorrectly specified exposure model completely disappears from the equation. If we're dealing with a control unit, we get the same result, plugging $D_i=0$ into the same Equation \@ref(eq:treated-aipw):
 $$\hat Y_{1i} = \frac{0(Y_i - \hat \mu_1 (X_i))}{\hat \pi (X_i)} + \hat \mu_1(X_i) = \hat \mu_1(X_i).$$  
 
-Now, what if the *exposure* model $\pi(X_i)$ is correctly specified and the outcome model $\mu_1(X)$ is incorrect? First, we rewrite the estimator for the treated outcome:
+Now, what if the *exposure* model $\pi(X_i)$ is correctly specified and the outcome model $\mu_1(X)$ is incorrect? First, we use algebra to rewrite Equation \@ref(eq:treated-aipw) for the treated outcome:
 \begin{align}
 \hat Y_{1i}& = \frac{D_i(Y_i - \hat \mu_1 (X_i))}{\hat \pi (X_i)} + \hat \mu_1(X_i) \nonumber \\
 &= \frac{D_iY_i}{\hat \pi (X_i)} - \frac{D_i\hat \mu_1 (X_i)}{\hat \pi (X_i)} + \frac{\hat \pi (X_i)\hat \mu_1(X_i)}{\hat \pi (X_i)} \nonumber \\
@@ -1513,11 +1618,11 @@ Now, what if the *exposure* model $\pi(X_i)$ is correctly specified and the outc
 \end{align}
 Since the exposure model is correctly specified, we have $D_i = \hat \pi(X_i)$ on average, so
 $$E[D_i - \hat \pi(X_i)] = 0.$$
-This means that the second term in Equation \@ref(eq:exposure-correct) is 0, so
+This means that the second term in Equation \@ref(eq:exposure-correct) is 0 in expectation, so
 $$E[\hat Y_{1i}]= E \left [ \frac{D_iY_i}{\hat \pi (X_i)}\right].$$
 This shows that when the exposure model is correct, then the estimator depends *only* on the exposure model. We can make similar arguments for the control model for $\hat Y_{0i}$ in Equation \@ref(eq:control-aipw).  
 
-This demonstration shows that this estimator achieves double robustness: The estimator is robust to misspecification of either the exposure or the outcome model (but not both). The other two double robust methods considered in this paper can be shown to have the same property, but proving so is more complicated.
+This demonstration shows that this estimator achieves double robustness: The estimator is robust to misspecification of either the exposure or the outcome model (but not both). The other two double robust methods considered in this paper can be shown to have the same property, but demonstrating this is more complicated. Interested readers can refer to the references cited above.
 
 # Simulations
 
@@ -2286,11 +2391,7 @@ write_csv(bind_rows(aipw_package_list),
 
 
 ```{r dml-package, eval = F}
-library(DoubleML)
-library(mlr3)
-library(mlr3pipelines)
-library(mlr3learners)
-library(mlr3extralearners)
+
 
 dml_package_list <- list()
 
@@ -2424,22 +2525,22 @@ sim_results <- bind_rows(lm_df, psm_df, lin_df, ipw_df, gcomp_df, aipw_trunc_df,
 
 These double robust methods have many similarities. How do the results they give compare? This section tests the performance of each in practice, comparing point estimates on simulated data from a causal inference competition. The true treatment effect is known and all potential confounders are observed, so these simulations allow assessment of bias and related quantities.  
 
-In 2016, the Atlantic Causal Inference Conference hosted a competition for causal inference methods that adjust on observables. @dorie_2019_automated published the results of this competition, along with the data used. Below, I test double robust methods on the 20 data sets used for the "do-it-yourself" part of the competition. The data represent a hypothetical twins study investigating the impact of birth weight on IQ. The data have 4,802 observations and 52 covariates. The authors of the study specify a different data generating process for the potential outcomes in each data set. In all cases, ignorability holds (all potential confounders are observed), but the authors vary the following:  
-
-- degree of nonlinearity
-- percentage of treated
-- overlap for the treatment group
-- alignment (correspondence in variables used to generate the assignment mechanism and the response surface)
-- treatment effect heterogeneity  
+In 2016, the Atlantic Causal Inference Conference hosted a competition for causal inference methods that adjust on observables. @dorie_2019_automated published the results of this competition, along with the data used. Below, I test double robust methods on the 20 data generating processes (DGPs) reserved for the "do-it-yourself" part of the competition. The data represent a hypothetical twins study investigating the impact of birth weight on IQ. The data have 4,802 observations and 52 covariates. Treatment is binary and the outcome is continuous. In all DGPs, ignorability holds (all potential confounders are observed), but the authors vary the following: (1) degree of nonlinearity, (2) percentage of treated, (3) overlap for the treatment group, (4) alignment (correspondence in variables used to generate the assignment mechanism and the response surface), and (5) treatment effect heterogeneity.  
 
 The true treatment effect also varies, but as a function of the other DGP characteristics. It has a mean of `r sim_results %>% filter(set == 'main') %>% summarize(round(mean(truth), 1))`, standard deviation of `r sim_results %>% filter(set == 'main') %>% summarize(round(sd(truth), 1))`, and range of `r sim_results %>% filter(set == 'main') %>% pull(truth) %>% min() %>% round(1)` to `r sim_results %>% filter(set == 'main') %>% pull(truth) %>% max() %>% round(1)`. 
 
 ## Evaluation Strategy  
 
 
-Implementing the R code presented in the Appendix, I compare the three double robust methods to two sets of traditional or "single robust" methods used as benchmarks (see Table \@ref(tab:methods-overview) for an overview of all methods used). By "single robust," I mean methods that are not robust to any misspecification. First are one-model methods. The most classic method considered -- linear regression -- models only the response surface. It is estimated using ordinary least squares regression ("OLS"), entering each variable separately without any interactions or higher-order terms. Two other one-model methods model only the treatment assignment mechanism. In propensity score matching (PSM), propensity scores are estimated from logistic regression with each variable entered separately and without any higher order terms, then matched using the `MatchIt` package. Finally, stabilized inverse probability weights [IPW, @austin_2015_moving, p. 3663] are used for weighted OLS regression. These IPWs are estimated using propensity scores estimated by each of the three under-the-hood estimation techniques described below; extreme propensity scores are truncated so that they range from 0.01 to 0.99.  
+Implementing the R code presented in the Appendix, I compare the three double robust methods to two sets of traditional or "single robust" methods used as benchmarks (see Table \@ref(tab:methods-overview) for an overview of all methods used). By "single robust," I mean methods that are not robust to any misspecification. First are one-model methods. The most classic method considered -- linear regression -- models only the response surface. It is estimated using ordinary least squares regression ("OLS"), entering each variable separately without any interactions or higher-order terms. Two other one-model methods model only the treatment assignment mechanism. In propensity score matching (PSM), propensity scores are estimated from logistic regression with each variable entered separately and without any higher order terms, then matched using the `MatchIt` package. Finally, stabilized inverse    probability weights [IPW, @austin_2015_moving, p. 3663] are used for weighted OLS regression. These IPWs are estimated using propensity scores estimated by each of the three under-the-hood estimation techniques described below; extreme propensity scores are truncated so that they range from 0.01 to 0.99.  
 
-The second set of single robust methods are two-model methods, which estimate separate models for treated and untreated units. In theory these could solve the misspecification problem that double robust methods are meant to solve, but they could still suffer from regularization bias. G-computation [@robins_1986_new; @snowden_2011_implementation] uses some estimation technique to predict outcomes under treatment and control for each unit in the dataset. The ATE estimate is the difference in the average prediction under treatment and the average prediction under control. The second two-model method is the Lin estimator [@lin_2013_agnostic]. This method aims to solve issues with the bias induced by OLS regression in a randomization framework by interacting the treatment indicator with mean-centered covariates. @hazlett_2024_understanding show that this method is equivalent to estimating two separate OLS regression models for the treated and control units.  
+The second set of single robust methods are two-model methods, which estimate separate models for treated and untreated units. In theory these could solve the misspecification problem that double robust methods are meant to solve, but they could still suffer from regularization bias. G-computation -- also called regression imputation -- uses some estimation technique to predict outcomes under treatment and control for each unit in the dataset [@robins_1986_new; @snowden_2011_implementation]. This underlying technique can be anything from a traditional method such as OLS regression to a flexible machine learning method. The ATE estimate is the difference in the average prediction under treatment and the average prediction under control: 
+
+$$\begin{aligned}
+\hat \tau_{gcomp} = &\frac{1}{n} \sum_{i=1}^n \left[\hat \mu_1 (\mathbf X_i) - \hat \mu_0 (\mathbf X_i) \right].
+\end{aligned}$$  
+
+The second two-model method is the Lin estimator [@lin_2013_agnostic]. This method aims to solve issues with the bias induced by OLS regression in a randomization framework by interacting the treatment indicator with mean-centered covariates. @hazlett_2024_demystifying show that this method is equivalent to estimating two separate OLS regression models for the treated and control units -- i.e., G-computation with each of the underlying models estimated by OLS regression.  
 
 Because many of these methods allow the user to choose the underlying estimation method, results compare three estimators. The first estimator uses a logistic regression for the exposure model and an OLS regression for the outcome model. Second is generalized random forests [GRF, @athey_2019_generalized] using the `grf` R package, with separate models for exposure and outcome. The final estimator is the SuperLearner (as promoted by the makers of TMLE) using the `SuperLearner` package [@polley_2023_superlearner], again with separate models for exposure and outcome. GLM, glmnet [a weighted average of lasso and ridge regression, @friedman_2021_package], and XGBoost with a maximum tree depth of 4 [@chen_2016_xgboost] are the models considered for the SuperLearner. These three estimation techniques are used for each of the three double robust methods and for IPW. GRF and SuperLearner are also used for G-computation (OLS predictions with G-computation return identical results to OLS regression).  
 
@@ -2467,7 +2568,7 @@ read_csv(here('files/methods.csv')) %>%
 
 ## Main results
 
-The 20 data sets used here cover a range of these attributes; see the supplemental material from @dorie_2019_automated for details. I use 10 simulations of each data set, resulting in 200 data sets. I then calculate bias, percent bias (the estimator's bias as a percentage of its standard error), root mean squared error (rmse), and median absolute error (mae). I also present the number of datasets for which the method fails and the median computation time for each data set, in seconds.^[Simulations were run on a 2020 MacBook Pro laptop computer with a 2 GHz Quad-Core Intel Core i5 Processor and 16 GB of memory.] In the main text I present average bias and RMSE, while the Supplementary Material contains tables with full results.  
+I use 10 simulations of each of the 20 DGPs, resulting in 200 data sets. I then calculate bias, percent bias (the estimator's bias as a percentage of its standard error), root mean squared error (rmse), and median absolute error (mae). I also present the number of datasets for which the method fails and the median computation time for each data set, in seconds.^[Simulations were run on a 2020 MacBook Pro laptop computer with a 2 GHz Quad-Core Intel Core i5 Processor and 16 GB of memory.] In the main text I present average bias and RMSE, while the Supplementary Material contains tables with full results.  
 
 Bias results for the full range of simulations are shown in Figure \@ref(fig:dorie-results-bias). Bias is quite low for many of the methods, however IPW (logit) and AIPW (OLS/logit) have high bias and variance, while TMLE (OLS/logit) has moderately high bias and variance. With an average true treatment effect of `r sim_results %>% filter(set == 'main') %>% summarize(round(mean(truth), 1))`, bias with absolute value greater than 1 is substantial. The traditional methods, however, achieve fairly low bias in general.
 
@@ -2477,7 +2578,7 @@ Figure \@ref(fig:dorie-results-rmse) orders methods by RMSE and presents both bi
 
 Overall, traditional methods perform surprisingly well in comparison with the double robust methods, and flexible single robust methods may be as effective as double robust methods. Even in the full range of datasets -- which include highly nonlinear exposure and outcome data-generating processes -- OLS, propensity score matching, and the Lin estimator obtain some of the smallest bias and RMSE. While double robust methods achieve the lowest RMSE, the choice of underlying estimator appears more important than the choice of method. AIPW and TMLE both do well with a flexible underlying estimator, while DML (in its partially linear form) does worse than OLS. Of the estimators considered, the SuperLearner (which considers GLM, glmnet, and XGBoost models) appears to be best for the double robust methods, with GRF following closely. G-computation does only a hair worse than these two double robust methods without explicitly accounting for regularization bias. Notably, the method with the longest computation time -- DML with a SuperLearner -- takes nearly 2,000 times as long as OLS (an average of 129 seconds per simulation compared to 0.061 seconds).  
 
-```{r dorie-results-bias,  fig.cap = 'Bias of Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 10 replications each.'}
+```{r dorie-results-bias,  fig.cap = 'Bias of Monte Carlo simulations using the first 20 DGPs from Dorie et al. (2019), 10 replications each. Points represent the bias of estimates on individual datasets, while box plots show the median, 25th and 75th percentiles, and whiskers extending to 1.5 times the interquartile range. Colors correspond to method (in which multiple estimators may be used).'}
 addline_format <- function(x,...){
     gsub('\\s','\n',x)
 }
@@ -2501,7 +2602,7 @@ sim_results %>%
 ggsave(here('draft/figures', 'dorie-results-bias.png'), width = 7,  height = 5.5, dpi = 600)
 ```
 
-```{r dorie-results-rmse, fig.cap = 'Root mean squared error and bias for Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 10 replications each. Values greater in absolute value than 4 are plotted at 4 and labeled with their actual value.'}
+```{r dorie-results-rmse, fig.cap = 'Root mean squared error and bias for Monte Carlo simulations using the first 20 DGPs from Dorie et al. (2019), 10 replications each. Values greater in absolute value than 4 are plotted at 4 and labeled with their actual value.'}
 
 sim_results_plot <- sim_results %>%
   filter(set == 'main') %>%
@@ -2546,7 +2647,7 @@ With these linear DGPs, there seems little reason to sacrifice computational eff
 
 
 
-```{r dorie-linear-bias,  fig.cap = 'Bias of Monte Carlo simulations using the two datasets from Dorie et al. (2019), with linear data generating processes, 100 replications each ("linear").'}
+```{r dorie-linear-bias,  fig.cap = 'Bias of Monte Carlo simulations using the two datasets from Dorie et al. (2019), with linear data generating processes, 100 replications each. Points represent the bias of estimates on individual datasets, while box plots show the median, 25th and 75th percentiles, and whiskers extending to 1.5 times the interquartile range. Colors correspond to method (in which multiple estimators may be used).'}
 sim_results %>% 
   filter(set == 'linear') %>%
   mutate(method_estimator = str_replace(method_estimator, 'superlearner', 'superl.')) %>%
@@ -2731,7 +2832,7 @@ bind_rows(dgp_list) %>%
   kableExtra::kable(booktabs = T, 
                     digits = 3,
                     linesep = '',
-                    caption = 'Data generating process: Three lowest RMSE methods by DGP for Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 10 replications each.')
+                    caption = 'Data generating process: Three lowest RMSE methods by DGP for Monte Carlo simulations using the first 20 DGPs from Dorie et al. (2019), 10 replications each.')
 ```
 
 ```{r dgp-2}
@@ -2740,23 +2841,71 @@ bind_rows(dgp_list) %>%
   kableExtra::kable(booktabs = T, 
                     digits = 3,
                     linesep = '',
-                    caption = 'Data generating process: Fourth- to sixth-lowest RMSE methods by DGP for Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 10 replications each.')
+                    caption = 'Data generating process: Fourth- to sixth-lowest RMSE methods by DGP for Monte Carlo simulations using the first 20 DGPs from Dorie et al. (2019), 10 replications each.')
 
 ```
 
 
-While the AIPW, TMLE, and G-computation with a SuperLearner may be the top performing methods overall, this does not mean that there are some data-generating processes (DGPs) where some other method may do better. Across the the 20 datasets, @dorie_2019_automated vary five DGP characteristics: degree of nonlinearity, the percentage treated, overlap for the treatment group, alignment (correspondence in variables used to generate the exposure and response models), and treatment effect heterogeneity. To test how the methods perform across different values of these characteristics, I begin with the 200 simulations from the 20 datasets used in the main results (Figures \@ref(fig:dorie-results-bias) and \@ref(fig:dorie-results-rmse)). I limit datasets to those generated by a particular value of a DGP characteristic, and I then calculate RMSE for each method for only these datasets. For example, alignment is 0 for datasets 8 and 16 (meaning there is 0 correlation between the terms included in the treatment and outcome models), so for this value of the DGP RMSE is calculated only for those two datasets.  
+While the AIPW, TMLE, and G-computation with a SuperLearner may be the top performing methods overall, this does not mean that there are some DGPs where some other method may do better. Across the 20 DGPs, @dorie_2019_automated vary five characteristics: degree of nonlinearity, the percentage treated, overlap for the treatment group, alignment (correspondence in variables used to generate the exposure and response models), and treatment effect heterogeneity. To test how the methods perform across different values of these characteristics, I begin with the 200 simulations from the 20 DGPs used in the main results (Figures \@ref(fig:dorie-results-bias) and \@ref(fig:dorie-results-rmse)). I limit datasets to those generated by a particular value of a DGP characteristic, and I then calculate RMSE for each method for only these datasets. For example, alignment is 0 for datasets 8 and 16 (meaning there is 0 correlation between the terms included in the treatment and outcome models), so for this value RMSE is calculated only for datasets generated from those two DGPs.  
 
-Tables \@ref(tab:dgp) and \@ref(tab:dgp-2) shows the six top-performing methods by lowest RMSE for each each value of the DGP characteristics. Across DGPs, the same methods dominate as in the full range of simulations: the SuperLearner with AIPW, TMLE, and G-computation. In fact, these three methods take the top three spots for *every* DGP variation in the simulations.  
+Tables \@ref(tab:dgp) and \@ref(tab:dgp-2) shows the six top-performing methods by lowest RMSE for each each value of the DGP characteristics. (The Supplementary Material presents a table with full results for all DGPs in the simulations.) Across DGPs, the same methods dominate as in the full range of simulations: the SuperLearner with AIPW, TMLE, and G-computation. In fact, these three methods take the top three spots for *every* DGP variation in the simulations.  
 
-Table \@ref(tab:dgp-2) shows the fourth- to sixth-lowest RMSE methods for each DGP variation. GRF with AIPW, G-computation, and TMLE take most of these spots, but the Lin estimator and OLS appear a few times.  
+Table \@ref(tab:dgp-2) shows the fourth- to sixth-lowest RMSE methods for each DGP variation. GRF with AIPW, G-computation, and TMLE take most of these spots, but the Lin estimator and OLS appear a few times. Notably, in the presence of high treatment effect heterogeneity, flexible machine learning methods take the top six spots, and not all of these are double robust. For the DGPs, allowing for treatment effects to vary appears more important than double robustness. This is supported by the performance of the Lin estimator, which takes the seventh spot (as shown in the Supplementary Material). This estimator is relatively inflexible but robust to heterogeneous effects. DML, which as implemented here is not robust to heterogeneous treatment effects, performs worse than OLS regression.  
 
 Overall, there is little variation across different types of DGPs in which method performs the best. Flexible estimators take the top spots (though notably not those used with DML), and traditional methods do fairly well across the board. 
+
+```{r hetro-rmse, eval = F, fig.height = 7, fig.cap = 'Treatment Effect Heterogeneity: Root mean squared error and bias for Monte Carlo simulations from the first 20 DGPs in Dorie et al. (2019), 10 replications each. Values greater in absolute value than 4 are plotted at 4 and labeled with their actual value.'}
+
+
+sim_results_plot <- sim_results_dgp %>%
+  group_by(`Treat. heterogeneity`, method_estimator) %>%
+  summarize(bias = mean(ate - truth, na.rm = T),
+            rmse = sqrt(mean((ate - truth)^2, na.rm = T))
+              ) %>%
+  pivot_longer(c(bias, rmse)) %>%
+  mutate(method_estimator = str_replace(method_estimator, 'superlearner', 'superl.')) %>%
+  mutate(label = ifelse(abs(value) > 4, round(value), NA),
+         value = ifelse(abs(value) > 4, 4*value/abs(value), value)) 
+
+(sim_results_plot %>%
+  filter(`Treat. heterogeneity` == 'high') %>%
+  arrange(desc(name), value) %>%
+  mutate(method_estimator = factor(method_estimator, levels = unique({.$method_estimator}))) %>%
+  ggplot(aes(x = method_estimator, y = value, color = name, shape = name)) +
+  geom_point() +
+  # ggrepel::geom_text_repel(aes(label = label), show.legend = F) +
+  geom_text(aes(label = label), nudge_y = ifelse(sim_results_plot$label > 0, -.5, .5), show.legend = F) +
+  geom_hline(yintercept = 0) + 
+  # facet_wrap(~`Treat. heterogeneity`, nrow = 2, scales = 'free_x') +
+  labs(x = '', y = '', title = 'High Treatment Effect Heterogeneity') +
+  theme(axis.text.x=element_text(angle=90, hjust=0.95,vjust=0.2)) +
+  #scale_x_discrete(labels=function(x){sub(", ", "\n", x)}) +
+  #scale_y_continuous(trans=ggallin::pseudolog10_trans)
+  ylim(c(-4, 4))
+  ) /
+  (sim_results_plot %>%
+  filter(`Treat. heterogeneity` == 'none') %>%
+  arrange(desc(name), value) %>%
+  mutate(method_estimator = factor(method_estimator, levels = unique({.$method_estimator}))) %>%
+  ggplot(aes(x = method_estimator, y = value, color = name, shape = name)) +
+  geom_point()) +
+  # ggrepel::geom_text_repel(aes(label = label), show.legend = F) +
+  geom_text(aes(label = label), nudge_y = ifelse(sim_results_plot$label > 0, -.5, .5), show.legend = F) +
+  geom_hline(yintercept = 0) + 
+  # facet_wrap(~`Treat. heterogeneity`, nrow = 2, scales = 'free_x') +
+  labs(x = '', y = '', title = 'No Treatment Effect Heterogeneity') +
+  theme(axis.text.x=element_text(angle=90, hjust=0.95,vjust=0.2)) +
+  #scale_x_discrete(labels=function(x){sub(", ", "\n", x)}) +
+  #scale_y_continuous(trans=ggallin::pseudolog10_trans)
+  ylim(c(-4, 4))
+
+
+```
 
 
 ## Do results vary by sample size?
 
-In the above simulations, double robust methods have only slightly outperformed traditional methods. Is the issue with previous results simply that the sample size of the simulation data ($n = 4,802$) is too small for double robust methods to seriously outperform traditional methods? The double robust methods reviewed here have been shown to have lower bias asymptotically, so perhaps their superiority to traditional or single robust methods will be starker in larger samples. To test this, this section uses simulated datasets of varying sizes, from 150 to 96,040 (20 times the original sample size). These datasets are also derived from the @dorie_2019_automated `aciccomp2016` package, using parameter set 7, a fairly nonlinear DGP with high heterogeneity. For sample sizes less than 4,802, the sample is randomly drawn from a randomly generated 4,802-unit sample. For sample sizes greater than 4,802, the design matrix (but not the outcome variable) is duplicated, then fed into the `dgp_2016` function. This preserves covariate distributions but retains stochasticity in the outcome.  
+In the above simulations, double robust methods have only slightly outperformed traditional methods. Is the issue with previous results simply that the sample size of the simulation data ($n = 4,802$) is too small for double robust methods to seriously outperform traditional methods? The double robust methods reviewed here have been shown to have lower bias asymptotically, so perhaps their superiority to traditional or single robust methods will be starker in larger samples. To test this, this section uses simulated datasets of varying sizes, from 150 to 96,040 (20 times the original sample size). These datasets are also derived from the @dorie_2019_automated `aciccomp2016` package, using parameter set 7, a fairly nonlinear DGP with high treatment effect heterogeneity. For sample sizes less than 4,802, the sample is randomly drawn from a randomly generated 4,802-unit sample. For sample sizes greater than 4,802, the design matrix (but not the outcome variable) is duplicated, then fed into the `dgp_2016` function. This preserves covariate distributions but retains stochasticity in the outcome.  
 
 Table \@ref(tab:dorie-size) presents the four methods with the lowest RMSE for each sample size (the Supplementary Material presents a table with full results). Again, AIPW, TMLE, and G-computation methods that incorporate the SuperLearner or GRF dominate. There are two exceptions: In the tiny sample of 150, IPW (SuperLearner) and IPW (GRF) figure into the best four methods. PSM is the best-performing method in samples of 1200, but it fails to estimate 17 of the 20 datasets. (With 58 covariates, some of the methods fail in smaller samples.)  
 
@@ -2767,7 +2916,7 @@ In sum, although methods incorporating SuperLearner or GRF do the best in most s
 
 
 
-```{r dorie-size-fig-old, fig.height = 8, eval = F, fig.cap = 'RMSE of Monte Carlo simulations using dataset 7 from Dorie et al. (2019) with varying sample sizes, 20 replications each'}
+```{r dorie-size-fig-old, fig.height = 8, eval = F, fig.cap = 'RMSE of Monte Carlo simulations using DGP 7 from Dorie et al. (2019) with varying sample sizes, 20 replications each'}
 addline_format <- function(x,...){
     gsub('\\s','\n',x)
 }
@@ -2908,12 +3057,12 @@ size_plot %>%
   kableExtra::kable(booktabs = T, 
                     digits = 3,
                     linesep = '',
-                    caption = 'Sample size: Four lowest RMSE methods by sample size for Monte Carlo simulations using dataset 7 from Dorie et al. (2019), 20 replications each')
+                    caption = 'Sample size: Four lowest RMSE methods by sample size for Monte Carlo simulations using DGP 7 from Dorie et al. (2019), 20 replications each')
   
 
 ```
 
-```{r dorie-size-fig, fig.height = 8, fig.cap = 'RMSE of Monte Carlo simulations using dataset 7 from Dorie et al. (2019) with varying sample sizes, 20 replications each'}
+```{r dorie-size-fig, fig.height = 8, fig.cap = 'RMSE of Monte Carlo simulations using DGP 7 from Dorie et al. (2019) with varying sample sizes, 20 replications each'}
 
 
 
@@ -2949,663 +3098,7 @@ size_plot %>%
 
 
 
-# Replications
 
-```{r aksoy, eval = F}
-aksoy <- read_dta(here('replication', 'aksoy.dta')) %>%
-  mutate(cid_num = as.integer(factor(cid))) %>%
-  as_factor()
-
-# first three models from table 2
-
-m1 <- lm(ISL ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` + 
-     `_Y66` + `_Y70` + `_Y71` + dlen + cid,
-   data = filter(aksoy, electyr == T)) # %>%
-  # tidy() %>%
-  # filter(!str_detect(term, 'cid'), !str_detect(term, '_Y'))
-
-m2 <- lm(ISL ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` + 
-     `_Y66` + `_Y70` + `_Y71` + dlen + cid + gdp_g + t + m + pop,
-   data = aksoy) 
-  # tidy() %>%
-  # filter(!str_detect(term, 'cid'), !str_detect(term, '_Y'))
-
-m3 <- lm(ISL ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` + 
-     `_Y66` + `_Y70` + `_Y71` + dlen + cid + gdp_g + t + m + pop + l_ISL,
-   data = aksoy) 
-  # tidy() %>%
-  # filter(!str_detect(term, 'cid'), !str_detect(term, '_Y'))
-
-aksoy_drop_na_y <- filter(aksoy, !is.na(ISL))
-
-
-
-
-
-m1_grf_dml <- dml_grf(outcome = 'ISL', 
-        treatment = 'dlen', 
-        covariates = c('year'), 
-        clustervar = 'cid_num',
-        dataset = aksoy,
-        target = 'all')
-
-
-m2_grf_dml <- dml_grf(outcome = 'ISL', 
-        treatment = 'dlen', 
-        covariates = c('year', 'gdp_g', 't', 'm', 'pop'), 
-        clustervar = 'cid_num',
-        dataset = aksoy,
-        target = 'all')
-
-m3_grf_dml <- dml_grf(outcome = 'ISL', 
-        treatment = 'dlen', 
-        covariates = c('year', 'gdp_g', 't', 'm', 'pop', 'l_ISL'), 
-        clustervar = 'cid_num',
-        dataset = aksoy,
-        target = 'all')
-
-
-
-m1 <- data.frame(estimate = 7.159, std.error = 2.539)
-m2 <- data.frame(estimate = 7.349, std.error = 2.491)
-m3 <- data.frame(estimate = 5.317, std.error = 1.855)
-
-compare_tbl(list(append(list(original = m1), m1_grf_dml), 
-                                  append(list(original = m2), m2_grf_dml), 
-                                  append(list(original = m3), m3_grf_dml)),
-                             tidy = F) %>%
-  write_rds(here('replication', 'aksoy_rep.RDS'))
-
-
-# huxtable::huxreg(compare_tbl(list(append(list(original = m1), m1_grf_dml), 
-#                                   append(list(original = m2), m2_grf_dml), 
-#                                   append(list(original = m3), m3_grf_dml)),
-#                              tidy = F),
-#                  statistics = NA) %>%
-#   huxtable::insert_row(c('Covariates', 'No', rep('Yes', 2)), after = nrow(.) - 1) %>%
-#   huxtable::insert_row(c('Lagged dependent variable', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-#   huxtable::set_caption('Replication of aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"') %>%
-#   write_rds(here('replication', 'aksoy_tab.RDS'))
-# 
-# read_rds(here('replication', 'aksoy_rep.RDS')) %>%
-#   huxtable::huxreg()
-
-
-
-
-
-```
-
-
-```{r biegert, eval = F}
-# Table 3
-
-biegert <- read_dta(here('replication', 'biegert.dta')) %>%
-  filter(sampleC == 1) %>%
-  mutate(year_num = as.numeric(year),
-         allstar_y_num = as.numeric(allstar_y),
-         allstar_x_num = as.numeric(allstar_x),
-    across(c(allstar_y, allstar_x, year), as.factor),
-    player_id_num = as.integer(factor(player_id))) %>%
-  as_factor()
-
-m1 <- glm(allstar_y ~ allstar_x, 
-          data = filter(biegert, sampleC == 1), family = 'binomial') %>%
-  margins::margins(variables = 'allstar_x', 
-                   vcov = sandwich::vcovCL(., cluster = ~player_id)) 
-
-m2 <- glm(allstar_y ~ allstar_x + height + pos + age_0 + age_0_2 + Black + time + time_2 + year, 
-          data = filter(biegert, sampleC == 1),
-          family = binomial(link = 'logit')) %>%
-  margins::margins(variables = 'allstar_x', 
-                   vcov = sandwich::vcovCL(., cluster = ~player_id)) 
-
-m3 <- glm(allstar_y ~ allstar_x + height + pos + age_0 + age_0_2 + Black + time + time_2 + year +
-            pts_sdt_nd + ast_sdt_nd + trb_sdt_nd + min_played_nd +  playoffs_nd + win_nd + bigm_nd, 
-          data = filter(biegert, sampleC == 1),
-          family = binomial(link = 'logit')) %>%
-  margins::margins(variables = 'allstar_x', 
-                   vcov = sandwich::vcovCL(., cluster = ~player_id)) 
-
-m4 <- glm(allstar_y ~ allstar_x + height + pos + age_0 + age_0_2 + Black + time + time_2 + year +
-            pts_sdt_nd + ast_sdt_nd + trb_sdt_nd + min_played_nd +  playoffs_nd + win_nd + bigm_nd +
-            pts_sdt_t + ast_sdt_t + trb_sdt_t, 
-          data = filter(biegert, sampleC == 1),
-          family = binomial(link = 'logit')) %>%
-  margins::margins(variables = 'allstar_x', 
-                   vcov = sandwich::vcovCL(., cluster = ~player_id)) 
-
-m5 <- glm(allstar_y ~ allstar_x + height + pos + age_0 + age_0_2 + Black + time + time_2 + year +
-            pts_sdt_nd + ast_sdt_nd + trb_sdt_nd + min_played_nd +  playoffs_nd + win_nd + bigm_nd +
-            pts_sdt_t + ast_sdt_t + trb_sdt_t +
-            min_played_t + playoffs_t + win_t + bigm_t, 
-          data = filter(biegert, sampleC == 1),
-          family = binomial(link = 'logit')) %>%
-  margins::margins(variables = 'allstar_x', 
-                   vcov = sandwich::vcovCL(., cluster = ~player_id)) 
-
-m6 <- glm(allstar_y ~ allstar_x + allstar_hi + height + pos + age_0 + age_0_2 + Black + time + time_2 + year +
-            pts_sdt_nd + ast_sdt_nd + trb_sdt_nd + min_played_nd +  playoffs_nd + win_nd + bigm_nd +
-            pts_sdt_t + ast_sdt_t + trb_sdt_t +
-            min_played_t + playoffs_t + win_t + bigm_t +
-            pts_sdt_hi + ast_sdt_hi + trb_sdt_hi + min_played_hi + playoffs_hi + win_hi + bigm_hi, 
-          data = filter(biegert, sampleC == 1),
-          family = binomial(link = 'logit')) %>%
-  margins::margins(variables = 'allstar_x', 
-                   vcov = sandwich::vcovCL(., cluster = ~player_id)) 
-
-
-
-
-
-# M1 
-set.seed(123)
-Y <- as.numeric(biegert[['allstar_y']])
-X <- data.frame(var = rep(NA_integer_, length(Y)))
-W <- as.numeric(biegert[['allstar_x']])
-
-grf_model1 <- grf::causal_forest(X = X, Y = Y, W = W, seed = 123,
-                      clusters = biegert$player_id_num
-                      )
-
-grf_out1 <- grf::average_treatment_effect(grf_model1, target.sample = 'all')
-
-
-dml_out1 <- data.frame(estimate = NA,
-                       std.error = NA)
-dml_cre_out1 <- dml_out1
-dml_hybrid_out1 <- dml_out1
-
-# M2
-m2_grf_dml <- dml_grf(outcome = 'allstar_y_num', 
-        treatment = 'allstar_x_num', 
-        covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num'), 
-        clustervar = 'player_id_num',
-        dataset = biegert,
-        target = 'all')
-
-
-# M3 
-m3_grf_dml <- dml_grf(outcome = 'allstar_y_num', 
-        treatment = 'allstar_x_num', 
-        covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num',
-                       'pts_sdt_nd', 'ast_sdt_nd', 'trb_sdt_nd', 'min_played_nd',  'playoffs_nd', 'win_nd', 'bigm_nd'), 
-        clustervar = 'player_id_num',
-        dataset = biegert,
-        target = 'all')
-
-# M4
-m4_grf_dml <- dml_grf(outcome = 'allstar_y_num', 
-        treatment = 'allstar_x_num', 
-        covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num',
-                       'pts_sdt_nd', 'ast_sdt_nd', 'trb_sdt_nd', 'min_played_nd',  'playoffs_nd', 'win_nd', 'bigm_nd',
-                       'pts_sdt_t', 'ast_sdt_t', 'trb_sdt_t'), 
-        clustervar = 'player_id_num',
-        dataset = biegert,
-        target = 'all')
-
-
-# M5
-m5_grf_dml <- dml_grf(outcome = 'allstar_y_num', 
-        treatment = 'allstar_x_num', 
-        covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num',
-                       'pts_sdt_nd', 'ast_sdt_nd', 'trb_sdt_nd', 'min_played_nd',  'playoffs_nd', 'win_nd', 'bigm_nd',
-                       'pts_sdt_t', 'ast_sdt_t', 'trb_sdt_t',
-                       'min_played_t', 'playoffs_t', 'win_t', 'bigm_t'), 
-        clustervar = 'player_id_num',
-        dataset = biegert,
-        target = 'all')
-
-
-
-# # M6
-# m6_grf_dml <- dml_grf(outcome = 'allstar_y_num', 
-#         treatment = 'allstar_x_num', 
-#         covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num',
-#                        'pts_sdt_nd', 'ast_sdt_nd', 'trb_sdt_nd', 'min_played_nd',  'playoffs_nd', 'win_nd', 'bigm_nd',
-#                        'pts_sdt_t', 'ast_sdt_t', 'trb_sdt_t',
-#                        'min_played_t', 'playoffs_t', 'win_t', 'bigm_t',
-#                        'pts_sdt_hi', 'ast_sdt_hi', 'trb_sdt_hi', 'min_played_hi', 'playoffs_hi', 'win_hi', 'bigm_hi'), 
-#         clustervar = 'player_id_num',
-#         dataset = biegert,
-#         target = 'all')
-
-out_empty <- grf_out1
-out_empty$estimate <- NA
-out_empty$std.err <- 
-
-compare_tbl(model_list = list(
-                 list(original = m1, grf = grf_out1, dml = dml_out1, dml_cre = dml_cre_out1, dml_wg_cre = dml_hybrid_out1), 
-                 append(list(original = m2), m2_grf_dml), 
-                 append(list(original = m3), m3_grf_dml),
-                 append(list(original = m4), m4_grf_dml),
-                 append(list(original = m5), m5_grf_dml),
-            treatment = 'allstar_x1',
-            tidy = T) %>%
-  write_rds(here('replication', 'biegert_rep.RDS'))
-
-
-# Final table
-# huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1),
-#                                   list(m2, grf_out2, dml_out2),
-#                                   list(m3, grf_out3, dml_out3),
-#                                   list(m4, grf_out4, dml_out4),
-#                                   list(m5, grf_out5, dml_out5),
-#                                   list(m6, grf_out6, dml_out6)),
-#                              treatment = 'allstar_x1'),
-#                  statistics = NA) %>%
-#   huxtable::insert_row(c('Baseline confounders', 'No', rep('Yes', 5)), after = nrow(.) - 1) %>%
-#   huxtable::insert_row(c('Prior situation + performance', rep('No', 2), rep('Yes', 4)), after = nrow(.) - 1) %>%
-#   huxtable::insert_row(c('Current performance', rep('No', 3), rep('Yes', 3)), after = nrow(.) - 1) %>%
-#   huxtable::insert_row(c('Current situation', rep('No', 4), rep('Yes', 2)), after = nrow(.) - 1) %>%
-#   huxtable::insert_row(c('Cumul. AS + cumul. mediators', rep('No', 5), 'Yes'), after = nrow(.) - 1) %>%
-#   huxtable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"') %>%
-#   write_rds(here('replication', 'biegert_tab.RDS'))
-# 
-# read_rds(here('replication', 'biegert_tab.RDS'))
-
-```
-
-
-
-```{r nussio-ind, eval = F}
-nussio_ind <- read_dta(here('replication/nussio_2024', 'Mexico City Individual data.dta')) %>%
-  filter(if_all(c(PARP, lognombre), ~!is.na(.x))) %>%
-  mutate(across(c(PARP, IT1, ED, BASURA), as.numeric),
-         cve_col_num = as.numeric(factor(cve_col))) %>%
-  as_factor()
-
-
-
-
-
-## Table 2 #### (individual analysis)
-
-m1 <- lm(PARP ~ lognombre + IT1, 
-         nussio_ind) %>%
-  lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve_col))
-
-m2 <- lm(PARP ~ lognombre + IT1 + 
-           ED + age + female + INGi + unemployed, 
-         nussio_ind) %>%
-  lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve_col))
-
-m3 <- lm(PARP ~ lognombre + IT1 + 
-           ED + age + female + INGi + unemployed +
-           HER + catholic + nonreligious + working + BASURA + RESS + 
-           PELEA  + PADRES + index_trustgov, 
-         nussio_ind) %>%
-  lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve_col))
-
-m4 <- lm(PARP ~ lognombre + IT1 + 
-           ED + age + female + INGi + unemployed +
-           HER + catholic + nonreligious + working + BASURA + RESS + 
-           PELEA  + PADRES + index_trustgov +
-           col, nussio_ind) %>%
-  lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve_col)) 
-  # tidy() %>%
-  # filter(!(str_detect(term, 'col')))
-
-
-# M1 
-m1_grf_dml <- dml_grf(outcome = 'PARP', 
-        treatment = 'lognombre', 
-        covariates = c('IT1'), 
-        clustervar = 'cve_col_num',
-        dataset = nussio_ind,
-        target = 'all')
-
-# M2 
-m2_grf_dml <- dml_grf(outcome = 'PARP', 
-        treatment = 'lognombre', 
-        covariates = c('IT1', 'ED', 'age', 'female', 'INGi', 'unemployed'), 
-        clustervar = 'cve_col_num',
-        dataset = nussio_ind,
-        target = 'all')
-
-# M3 & M4 (M4 has fixed effects)
-m3_grf_dml <- dml_grf(outcome = 'PARP', 
-        treatment = 'lognombre', 
-        covariates = c('IT1', 'ED', 'age', 'female', 'INGi', 'unemployed',
-                       'HER', 'catholic', 'nonreligious', 'working', 'BASURA', 'RESS', 
-                       'PELEA' , 'PADRES', 'index_trustgov'), 
-        clustervar = 'cve_col_num',
-        dataset = nussio_ind,
-        target = 'all')
-
-m4_grf_dml <- m3_grf_dml
-
-
-compare_tbl(model_list = list(append(list(original = m1), m1_grf_dml),
-                              append(list(original = m2), m2_grf_dml), 
-                              append(list(original = m3), m3_grf_dml),
-                              append(list(original = m4), m4_grf_dml)),
-            treatment = 'lognombre',
-            tidy = T) %>%
-  write_rds(here('replication', 'nussio_ind_rep.RDS'))
-
-
-# Final table
-# huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1),
-#                                   list(m2, grf_out2, dml_out2),
-#                                   list(m3, grf_out3, dml_out3),
-#                                   list(m4, grf_out4, dml_out4)),
-#                              treatment = 'lognombre'),
-#                  statistics = NA) %>%
-#   huxtable::insert_row(c('Colonia FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-#   huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
-#   huxtable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"') %>%
-#   write_rds(here('replication', 'nussio_ind_tab.RDS'))
-# 
-# read_rds(here('replication', 'nussio_ind_tab.RDS'))
-```
-
-```{r nussio-ag, eval = F}
-## Table 4 #### (aggregate analysis)
-nussio_ag <- read_dta(here('replication/nussio_2024', 
-                           'Mexico Municipality Cross-Sectional Data.dta')) %>%
-  filter(if_all(c(loglynchpermio, organized_lighting_mean), ~!is.na(.x))) %>%
-  mutate(estado_num = as.numeric(estado)) %>%
-  # mutate(across(c(PARP, IT1, ED, BASURA), as.numeric),
-  #        cve_col_num = as.integer(factor(cve_col))) %>%
-  as_factor()
-
-nussio_ag_drop_na <- nussio_ag %>% drop_na(loglynchpermio, organized_lighting_mean,
-                          trust_neighbors_mean, problem_lighting_mean,
-                          c_poptot, area, pconeval_poverty_pobreza_pob, 
-                          coneval_gini_coeficientedegini,
-                          indigenous, c_poptot_norelpop, homirate, robberyrate,
-           victim_household_before_prev_yea, trust_army_mean)
-
-m1 <- lm(loglynchpermio ~ organized_lighting_mean + trust_neighbors_mean + problem_lighting_mean,
-         nussio_ag) %>%
-  lmtest::coeftest(., vcov = sandwich::vcovCL(., ~estado))
-
-m2 <- lm(loglynchpermio ~ organized_lighting_mean + trust_neighbors_mean + problem_lighting_mean +
-           c_poptot + area + pconeval_poverty_pobreza_pob + coneval_gini_coeficientedegini + 
-           indigenous + c_poptot_norelpop + homirate + robberyrate,
-         nussio_ag) %>%
-  lmtest::coeftest(., vcov = sandwich::vcovCL(., ~estado))
-
-m3 <- lm(loglynchpermio ~ organized_lighting_mean + trust_neighbors_mean + problem_lighting_mean +
-           c_poptot + area + pconeval_poverty_pobreza_pob + coneval_gini_coeficientedegini + 
-           indigenous + c_poptot_norelpop + homirate + robberyrate +
-           victim_household_before_prev_yea + trust_army_mean,
-         nussio_ag) %>%
-  lmtest::coeftest(., vcov = sandwich::vcovCL(., ~estado))
-
-m4 <- lm(loglynchpermio ~ organized_lighting_mean + trust_neighbors_mean + problem_lighting_mean +
-           c_poptot + area + pconeval_poverty_pobreza_pob + coneval_gini_coeficientedegini + 
-           indigenous + c_poptot_norelpop + homirate + robberyrate +
-           victim_household_before_prev_yea + trust_army_mean + 
-           estado,
-         nussio_ag)
-
-
-
-# M1 
-m1_grf_dml <- dml_grf(outcome = 'loglynchpermio', 
-        treatment = 'organized_lighting_mean', 
-        covariates = c('trust_neighbors_mean', 'problem_lighting_mean'), 
-        clustervar = 'estado_num',
-        dataset = nussio_ag,
-        target = 'all')
-
-
-# M2
-m2_grf_dml <- dml_grf(outcome = 'loglynchpermio', 
-        treatment = 'organized_lighting_mean', 
-        covariates = c('trust_neighbors_mean', 'problem_lighting_mean',
-                       'c_poptot', 'area', 'pconeval_poverty_pobreza_pob', 'coneval_gini_coeficientedegini', 
-           'indigenous', 'c_poptot_norelpop', 'homirate', 'robberyrate'), 
-        clustervar = 'estado_num',
-        dataset = nussio_ag,
-        target = 'all')
-
-# M3
-m3_grf_dml <- dml_grf(outcome = 'loglynchpermio', 
-        treatment = 'organized_lighting_mean', 
-        covariates = c('trust_neighbors_mean', 'problem_lighting_mean',
-                       'c_poptot', 'area', 'pconeval_poverty_pobreza_pob', 'coneval_gini_coeficientedegini', 
-           'indigenous', 'c_poptot_norelpop', 'homirate', 'robberyrate',
-           'victim_household_before_prev_yea', 'trust_army_mean'), 
-        clustervar = 'estado_num',
-        dataset = nussio_ag,
-        target = 'all')
-
-# M4
-m4_grf_dml <- m3_grf_dml
-
-
-compare_tbl(model_list = list(append(list(original = m1), m1_grf_dml),
-                              append(list(original = m2), m2_grf_dml), 
-                              append(list(original = m3), m3_grf_dml),
-                              append(list(original = m4), m4_grf_dml)),
-            treatment = 'organized_lighting_mean',
-            tidy = T) %>%
-  write_rds(here('replication', 'nussio_ag_rep.RDS'))
-
-
-# huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1),
-#                                   list(m2, grf_out2, dml_out2),
-#                                   list(m3, grf_out3, dml_out3),
-#                                   list(m4, grf_out4, dml_out4)),
-#                  treatment = 'organized_lighting_mean'),
-#                  statistics = NA) %>%
-#   huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
-#   huxtable::insert_row(c('Estado FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-#   huxtable::insert_row(c('Estado clustered SE', 'Yes', 'Yes', 'Yes', 'No'), after = nrow(.) - 1) %>%
-#   huxtable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"') %>%
-#   # huxtable::set_width(1) %>%
-#   # huxtable::set_all_padding(0) %>%
-#   write_rds(here('replication', 'nussio_ag_tab.RDS'))
-# 
-# read_rds(here('replication', 'nussio_ag_tab.RDS'))
-
-# names(grf_out1) <- c('estimate', 'std.error')
-# tidy(m1) %>%
-#   filter(term == 'organized_lighting_mean') %>%
-#   bind_rows(mutate(bind_rows(grf_out1))) %>%
-#   mutate(term = c('original', 'TMLE (GRF)'), p.value = p_val(estimate, std.error)) %>%
-#   huxtable::huxreg()
-  
-```
-
-```{r nussio-ne, eval = F}
-nussio_ne <- read_dta(here('replication/nussio_2024', 
-                           'Mexico Municipality Panel Data.dta')) %>%
-  # filter(if_all(c(loglynchpermio, organized_lighting_mean), ~!is.na(.x))) %>%
-  mutate(cve_num = as.numeric(cve),
-         year_num = year,
-         year = as.factor(year),
-         cve = cve,
-         cve = as.factor(cve)) %>%
-  # mutate(across(c(PARP, IT1, ED, BASURA), as.numeric),
-  #        cve_col_num = as.integer(factor(cve_col))) %>%
-  as_factor()
-
-# m1 <- lm(lynch_event ~ eq2017_250X2017 + year + cve, data = nussio_ne) %>%
-#   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve))
-
-# m1 <- fixest::feols(lynch_event ~ eq2017_250X2017 | year + cve, 
-#               data = nussio_ne) %>%
-#   summary(vcov = ~cve) %>%
-#   tidy()
-
-
-m1 <- data.frame(estimate = 0.108, std.error = 0.019)
-m2 <- data.frame(estimate = 0.113, std.error = 0.021)
-m3 <- data.frame(estimate = 0.087, std.error = 0.019)
-m4 <- data.frame(estimate = 0.126, std.error = 0.026)
-m5 <- data.frame(estimate = -0.010, std.error = 0.002)
-m6 <- data.frame(estimate = -0.009, std.error = 0.002)
-
-
-
-# M1
-m1_grf_dml <- dml_grf(outcome = 'lynch_event', 
-        treatment = 'eq2017_250X2017', 
-        covariates = c('year_num'), 
-        clustervar = 'cve_num',
-        dataset = nussio_ne,
-        target = 'treated',
-        drop_na_grf = T)
-
-# M2
-m2_grf_dml <- dml_grf(outcome = 'lynch_event', 
-        treatment = 'eq2017_250X2017', 
-        covariates = c('year_num', 'homicidefull', 'robofull', 'secuestrofull', 'inegi_infant_mort'), 
-        clustervar = 'cve_num',
-        dataset = nussio_ne,
-        target = 'treated',
-        drop_na_grf = T)
-
-# M3
-m3_grf_dml <- dml_grf(outcome = 'lynch_event', 
-        treatment = 'eq2017_damageX2017', 
-        covariates = c('year_num'), 
-        clustervar = 'cve_num',
-        dataset = nussio_ne,
-        target = 'treated',
-        drop_na_grf = T)
-
-# M4
-m4_grf_dml <- dml_grf(outcome = 'lynch_event', 
-        treatment = 'eq2017_damageX2017', 
-        covariates = c('year_num', 'homicidefull', 'robofull', 'secuestrofull', 'inegi_infant_mort'), 
-        clustervar = 'cve_num',
-        dataset = nussio_ne,
-        target = 'all',
-        drop_na_grf = T)
-
-# # M5
-# m5_grf_dml <- dml_grf(outcome = 'lynch_event', 
-#         treatment = 'eq2017_dist100X2017', 
-#         covariates = c('year_num'), 
-#         clustervar = 'cve_num',
-#         dataset = nussio_ne,
-#         target = 'all',
-#         drop_na_grf = T)
-# 
-# # M6
-# m6_grf_dml <- dml_grf(outcome = 'lynch_event', 
-#         treatment = 'eq2017_dist100X2017', 
-#         covariates = c('year_num', 'homicidefull', 'robofull', 'secuestrofull', 'inegi_infant_mort'), 
-#         clustervar = 'cve_num',
-#         dataset = nussio_ne,
-#         target = 'all',
-#         drop_na_grf = T)
-
-
-compare_tbl(model_list = list(
-                 append(list(original = m1), m1_grf_dml),
-                 append(list(original = m2), m2_grf_dml), 
-                 append(list(original = m3), m3_grf_dml),
-                 append(list(original = m4), m4_grf_dml),
-            treatment = NULL,
-            tidy = F) %>%
-  write_rds(here('replication', 'nussio_ne_rep.RDS'))
-
-# Final table
-# huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1),
-#                                   list(m2, grf_out2, dml_out2),
-#                                   list(m3, grf_out3, dml_out3),
-#                                   list(m4, grf_out4, dml_out4),
-#                                   list(m5, grf_out5, dml_out5),
-#                                   list(m6, grf_out6, dml_out6)),
-#                              tidy = F),
-#                  statistics = NA) %>%
-#   huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes', 'No', 'Yes'), 
-#                        after = nrow(.) - 1) %>%
-#   huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
-#   write_rds(here('replication', 'nussio_ne_tab.RDS'))
-# 
-# read_rds(here('replication', 'nussio_ne_tab.RDS'))
-```
-
-
-
-
-These simulations suggest that double robust methods with flexible machine learning algorithms may show some gains in bias reduction compared to traditional methods such as linear OLS regression. However, do these methods make a difference in practice? In this section, I replicate results from recent *American Sociological Review* articles using two double robust methods. I chose three papers that meet the following criteria: the authors were trying to estimate a causal effect, they used OLS or logistic regression, and they  posted replication code and data.  
-
-The first paper I replicate is "Commitment through Sacrifice: How Longer Ramadan Fasting Strengthens Religiosity and Political Islam," by @aksoy_2022_commitment. Using the natural variation in daylight from year to year during Ramadan, the authors test the relationship between Ramadan fasting time and the vote share of Islamist political parties in Turkey. The second paper is "They Can’t All Be Stars: The Matthew Effect, Cumulative Status Bias, and Status Persistence in NBA All-Star Elections" [@biegert_2023_they]. The authors use detailed records on NBA players' performance to study the effect of the previous year's All-Star nomination on being re-nominated in the current year. Lastly, I replicate "The 'Dark Side' of Community Ties: Collective Action and Lynching in Mexico" [@nussio_2024_dark]. The author estimates the effect of community ties in Mexico on individual participation in lynching or lynching rates at aggregate levels.
-
-
-## Evaluation Strategy
-
-I replicate these papers using two double robust methods with machine learning. First, I use AIPW in conjunction with generalized random forests (GRF) using the `grf` package [@tibshirani_2024_grf]. Second, I use a partially linear model for DML with a SuperLearner that, like above, harnesses ensemble learning with GLM, glmnet, and XGBoost, using the `DoubleML` package [@bach_2022_doubleml].^[In the Supplementary Material, I present the results of using these packages to estimate the full set of simulations shown above. Results are fairly similar to my own R code, though computation time is notably faster.] Note that AIPW with GRF allows for heterogeneous treatment effects, while this version of DML does not. I use packages rather than my own R code for two reasons. First, these packages calculate asymptotic standard errors without the need for bootstrapping, allowing straightforward comparison with the statistical significance of results in the original papers. Second, both packages allow clustering of standard errors, which all three papers employ.  
-
-Two aspects of these replications deserve further explanation. First, it is common in social science to drop observations with missing data for some covariates, a technique called the "complete case method" or "listwise deletion." Two of these papers deal with missing data in this way -- by decreasing the sample size. Some machine learning methods, on the other hand, use missing data informatively [@mayer_2020_doubly]; the `grf` package allows covariates (but not the outcome or treatment assignment) to be missing, using missingness itself as a splitting criterion in growing trees. Hence for data with moderate levels of missingness, I allow `grf` to work with the entire dataset. For `DoubleML`, I use the same samples as in the original papers -- in these cases only observations with complete cases for a given regression model. An exception is Table 5 for @nussio_2024_dark, where the number of observations with missing control variables is far larger than the number without missing data; hence I drop incomplete cases for all analyses. I describe the exact procedures for handling missingness in the notes for each table of results in the Supplementary Material.  
-
-The second aspect is fixed effects. Fixed effects are commonly used in linear models; beginning with a categorical variable with $k$ group labels, one hot encoding converts this to $k-1$ dichotomous variables, and these are entered into the regression linearly. These are meant to account for between-group differences [@firebaugh_2013_fixed]. In the papers replicated here, @aksoy_2022_commitment use these types of fixed effects in all models, @biegert_2023_they use no fixed effects, and @nussio_2024_dark uses fixed effects in some models (details are in the table notes in the Supplementary Material). In many machine learning methods, categorical variables cannot be easily incorporated [@johannemann_2021_sufficient]. Adding a large number of information-poor dichotomous variables to flexible tree methods like GRF and XGBoost does not have a fixed effects interpretation, since these methods can can interact any variable with any other and apply non-linear transformations. In cases where a researcher would want to use fixed effects for time and other variables with a natural ordering, these can be entered as a single continuous variable, whose effect the model will allow to vary nonlinearly. But categorical variables without a natural ordering -- such as individual or group fixed effects -- need special treatment. Recently, @clarke_2024_double have developed an extension to DML that incorporates group-level fixed effects. In the main paper, I do not adjust for individual or group fixed effects in the machine learning replications (even when the original paper's model does), but in the Supplementary Material I present two of Clarke and Polselli's approaches to incorporating fixed effects in DML. Results change very little from standard DML.  
-
-## Results
-
-```{r replications, fig.height = 8, fig.cap = 'Replications of ASR papers using double robust machine learning methods. Bars represent 95-percent asymptotic confidence intervals.'}
-aksoy_list <- readRDS(here('replication', 'aksoy_rep.RDS')) 
-aksoy_list[[1]]$model <- '(1) Base'
-aksoy_list[[2]]$model <- '(2) Covariates'
-aksoy_list[[3]]$model <- '(3) Lagged dependent variable'
-
-biegert_list <- readRDS(here('replication', 'biegert_rep.RDS')) 
-biegert_list[[1]]$model <- '(1) No controls'
-biegert_list[[2]]$model <- '(2) Baseline confounders'
-biegert_list[[3]]$model <- '(3) Prior situation + performance'
-biegert_list[[4]]$model <- '(4) Current performance'
-biegert_list[[5]]$model <- '(5) Current situation'
-
-nussio_ind_list <- readRDS(here('replication', 'nussio_ind_rep.RDS')) 
-nussio_ind_list[[1]]$model <- '(1) Base'
-nussio_ind_list[[2]]$model <- '(2) Some controls'
-nussio_ind_list[[3]]$model <- '(3) All controls'
-nussio_ind_list[[4]]$model <- '(4) Geographical FE'
-
-nussio_ag_list <- readRDS(here('replication', 'nussio_ag_rep.RDS')) 
-nussio_ag_list[[1]]$model <- '(1) Base'
-nussio_ag_list[[2]]$model <- '(2) Some controls'
-nussio_ag_list[[3]]$model <- '(3) All controls'
-nussio_ag_list[[4]]$model <- '(4) Geographical FE'
-
-nussio_ne_list <- readRDS(here('replication', 'nussio_ne_rep.RDS')) 
-nussio_ne_list[[1]]$model <- '(1) Within 250 km of earthquake'
-nussio_ne_list[[2]]$model <- '(2) Within 250 km of earthquake, controls'
-nussio_ne_list[[3]]$model <- '(3) Earthquake damage'
-nussio_ne_list[[4]]$model <- '(4) Earthquake damage, controls'
-
-bind_rows(
-  mutate(bind_rows(aksoy_list), paper = 'A. Aksoy et al. (2022)'),
-  mutate(bind_rows(biegert_list), paper = 'B. Biegert et al. (2022)'),
-  mutate(bind_rows(nussio_ind_list), paper = 'C. Nussio et al. (2024) Table 2: Individual'),
-  mutate(bind_rows(nussio_ag_list), paper = 'D. Nussio et al. (2024) Table 4: Aggregate'),
-  mutate(bind_rows(nussio_ne_list), paper = 'E. Nussio et al. (2024) Table 5: Natural Experiment')
-  ) %>%
-  filter(term %in% c('Original', 'AIPW (GRF)', 'DML (SuperLearner)')) %>%
-  mutate(term = factor(term, levels = unique({.$term})),
-         paper = factor(paper, levels = unique({paper})),
-         model = factor(model, levels = rev(unique({.$model})))) %>%
-  ggplot(aes(x = model, y = estimate, color = term, shape = term)) +
-  geom_hline(yintercept = 0, color = 'grey') +
-  geom_pointrange(position = position_dodge(-0.7),
-                  aes(ymin = estimate - 1.96*std.error, ymax = estimate + 1.96*std.error)) + 
-  coord_flip() +
-  facet_wrap(~paper, scales = 'free', ncol = 1) +
-  labs(x = '', y = '') +
-  theme(legend.position = 'bottom')
-```
-
-Results of the replications are shown in Figure \@ref(fig:replications), with tables of coefficients and explanatory notes in the Supplementary Material. For each paper, I replicate the main results. I do not replicate models testing mechanisms, interactions, mediators, or placebos.  
-
-The first paper, "Commitment through Sacrifice: How Longer Ramadan Fasting Strengthens Religiosity and Political Islam" [@aksoy_2022_commitment], finds an OLS coefficient of about 7, implying a half-hour increase in fasting time is associated with a 3.5 percentage point increase in Islamist vote share. As shown in Figure \@ref(fig:replications) Panel A, coefficients using the double robust methods are noticeably smaller (though not significantly different from the original coefficients). In Model 2, which includes covariates, the main coefficient is nonsignificant at the 5-percent level. In both cases, the double robust estimates are more precise, with smaller standard errors than the OLS results.  
-
-The second paper, "They Can’t All Be Stars: The Matthew Effect, Cumulative Status Bias, and Status Persistence in NBA All-Star Elections" [@biegert_2023_they]. The authors use logistic regression to estimate the effect of the previous year's All-Star nomination on being re-nominated in the current year. Panel B of Figure \@ref(fig:replications) shows the average marginal effects from the authors' original regressions alongside the double robust replications. Models 1 and 2 do not control for previous performance and find that a previous year's nomination increases the likelihood of being nominated by 45 to 60 percentage points. Model 3 isolates the effect of the previous year's nomination from performance in the previous year; the original paper found a much smaller coefficient once these controls were incorporated, giving a marginal effect of about 5 percentage points, but the double robust methods estimate large effect sizes, at 30 and 59 percentage points for AIPW (GRF) and DML (SuperLearner), respectively. Models 4 and 5 control for other current factors, and double robust estimates are somewhat smaller than in Model 3 but still much larger than the original paper's estimates.  
-
-The third and final paper for replication is "The 'Dark Side' of Community Ties: Collective Action and Lynching in Mexico" [@nussio_2024_dark]. I present his three main analyses as separate panels. In his first analyses, he looks at individual propensity to participate in a lynching, using the log number of names of people a respondent knows in his or her colonia (neighborhood) in Mexico City as the independent variable. In OLS models with and without controls, the author finds a coefficient of about 0.03 for the logged variable, implying that a one-percent increase in names known is associated with about 0.0003 percentage points greater likelihood of participating in a lynching. As shown in Panel C of Figure \@ref(fig:replications), For AIPW (GRF), coefficients and statistical significance are very similar to the original OLS coefficients. DML (SuperLearner), however, shows nonsignificant or negative effects.  
-
-Panel D of Figure \@ref(fig:replications) replicates Nussio's [-@nussio_2024_dark] second analysis, which aggregates to the municipal level. Models estimate the effect of neighborly cooperation -- operationalized by the proportion of respondents who think that most neighbors help each other in problems related to electric lighting -- on the log municipal lynching rate. The original OLS estimate was fairly stable across models with controls, at about a one percentage point increase in neighborly cooperation associated with a two-percent increase in the lynching rate [$\exp(2/100) = 1.02$]. This estimate is fairly stable across estimators, though (as shown in the Supplementary Material) this is one case where incorporating fixed effects in the DML models reduces coefficient sizes.  
-
-Finally, Panel E of Figure \@ref(fig:replications) replicates Nussio's [-@nussio_2024_dark] natural experiment, where he estimates the effect of the Puebla earthquake on September 19, 2017, on the number of lynching events in a municipality, using panel data from 2000 to 2020. The original OLS models found that municipalities within 250 km of the earthquake or that experienced earthquake damage experienced an increase of about 0.1 in the number of lynchings in years after 2017 (the mean yearly lynchings per municipality is 0.034). While models for AIPW (GRF) are fairly similar to the original OLS estimates, DML (SuperLearner) estimates are double the original estimates. 
-
-These replications show that results from the original OLS or logistic regressions that these papers employed are fairly robust. In most cases, effect sign and statistical significance are consistent across the original and double robust estimators. Notably, effect sizes for @aksoy_2022_commitment in the double robust models are smaller than the OLS estimates, reaching nonsignificance in one case. DML (SuperLearner) estimates for Nussio's [-@nussio_2024_dark] individual analysis change sign and significance, while the AIPW (GRF) estimates are close to the OLS estimates. However, the simulation results presented in the previous section suggested that the DML (SuperLearner) estimator has higher RMSE than both OLS and AIPW (GRF) (Figure \@ref(fig:dorie-results-rmse)), so perhaps the original results are reliable.^[The Supplementary Material shows that the DoubleML package with the SuperLearner has higher bias and RMSE in the simulations than my own R code.] Overall, these replications highlight the importance of testing the robustness of estimates to different models; double robust, machine learning methods sometimes do produce substantively different results from traditional methods.  
 
 
 
@@ -3617,17 +3110,29 @@ These replications show that results from the original OLS or logistic regressio
 
 # Discussion and Conclusion
 
-This paper aims to provide an introduction to and evaluation of double robust methods for covariate adjustment in causal inference. By comparing AIPW, TMLE, and DML to more traditional statistical methods such as OLS and PSM as well as flexible "single robust" methods such as G-computation and the Lin estimator, it allows evaluation of whether these methods are worth the effort and (computational) time for social scientists to adopt them.  
+This paper aims to provide an introduction to and evaluation of double robust methods for covariate adjustment in causal inference. By comparing the double robust methods of AIPW, TMLE, and DML to more traditional statistical methods such as OLS and PSM as well as flexible "single robust" methods such as G-computation and the Lin estimator, it allows evaluation of whether these methods are worth the effort and (computational) time for social scientists to adopt them.  
 
-Results are nuanced. In the full range of simulated data, AIPW and TMLE with a SuperLearner or GRF are able to obtain smaller RMSE than OLS or PSM. However these differences are quite small, and G-computation with the same flexible machine learning methods performs just as well as the double robust methods. DML does not perform as well as AIPW or TMLE (however, a version of DML that allows for heterogeneous effects might perform better; see Chernozhukov et al. [-@chernozhukov_2018_double, p. C35]). The Lin estimator performs slightly better than OLS or PSM, without any increase in computation time. Methods relying on logit models to estimate propensity weights have the most error; researchers should use these methods with caution.  
+Results are nuanced. In the full range of simulated data, AIPW and TMLE with a SuperLearner or GRF are able to obtain lower error than OLS or PSM. However these differences are quite small, and non-double-robust G-computation with the same flexible machine learning methods performs just as well as the double robust methods. DML does not perform as well as AIPW or TMLE (however, a version of DML that allows for heterogeneous effects might perform better; see Chernozhukov et al. [-@chernozhukov_2018_double, p. C35]). The Lin estimator performs slightly better than OLS or PSM, without any increase in computation time. Double robust methods relying on logit models to estimate propensity weights have the greatest error, likely due to small estimated propensity scores; researchers should use these methods with caution.  
 
-Methods that come out on top in the full range of simulations also tend to do the best regardless of the data generating process, though the Lin estimator and OLS rise in the rankings when the true treatment and outcome models are linear. AIPW, TMLE, and G-computation with a SuperLearner or GRF perform the best, followed closely by the Lin estimator, OLS, and PSM. As sample size varies, the same rank order generally holds, though traditional methods are unable to produce estimates in small samples when there are many covariates, while the double robust methods are able to do so.  
+Methods that come out on top in the full range of simulations also tend to do the best regardless of the data generating process, though the Lin estimator and OLS rise in the rankings when the true treatment and outcome models are linear. As sample size varies, the same rank order generally holds, though traditional methods are unable to produce estimates in small samples when there are many covariates, while the double robust methods are able to do so.  
 
-In replications of prominent sociology articles, these methods do sometimes change conclusions. In the examples given in this paper, coefficients shift somewhat and sometimes change sign and significance. DML with a SuperLearner shows results that differ more dramatically from the OLS or logistic regressions that the authors originally used, while AIPW with GRF produces estimates that are, for the most part, fairly close to those of the original analyses. This may be related to the higher error shown in the simulations for DML; this method may be somewhat more unstable. Overall, these replications suggest that researchers should test the robustness of their results using a variety of different models and estimators.  
+<!-- In replications of prominent sociology articles, these methods do sometimes change conclusions. In the examples given in this paper, coefficients shift somewhat and sometimes change sign and significance. DML with a SuperLearner shows results that differ more dramatically from the OLS or logistic regressions that the authors originally used, while AIPW with GRF produces estimates that are, for the most part, fairly close to those of the original analyses. This may be related to the higher error shown in the simulations for DML; this method may be somewhat more unstable.   -->
 
-This paper has a number of limitations. First, although it considers some of the most popular double robust, machine learning, traditional, and single robust methods, there are many methods that it could not evaluate, including variations and extensions of the three methods. Future research could also consider the efficacy of calibration methods such as Entropy Balancing that have shown to be double robust (under certain assumptions) despite not explicitly modeling the outcome or treatment assignment [@zhao_2017_entropy]. Second, although the simulations are meant to cover a wide range of data generating processes, they only consider continuous outcomes and binary treatments; simulations with binary or categorical outcomes and continuous or multi-armed treatments may yield different results. Finally, in considering only functional form misspecification, the simulations in this paper do not consider situations where ignorability does not hold. In particular, this paper does not evaluate situations where causal identification is misspecified [@keil_2018_resolving]. Future research should assess violations of this and other assumptions underlying these methods.    
+What might explain the variation in performance across methods and estimators? One major reason could be the presence of treatment effect heterogeneity, which is high in 18 out of the 20 DGPs studied here. When the treatment effect does not vary systematically by other covariates, then OLS regression correctly targets the ATE. However, when the treatment effect is heterogeneous -- meaning it depends on the values of other covariates -- the OLS estimate will diverge from the ATE [@angrist_2009_mostly; @hazlett_2024_demystifying]. In this case, it is important to use a method that allows the treatment effect to vary in this way. Two of the double robust methods presented here -- AIPW and TMLE -- allow for this heterogeneity, and they are the top performing methods. The "single robust" G-computation also accounts for heterogeneity by estimating separate models for treated and untreated groups, and it performs nearly as well as AIPW and TMLE. The Lin estimator constitutes another heterogeneity-robust option and performs fairly in these simulations (recall that G-computation with OLS regressions is equivalent to the Lin estimator [@hazlett_2024_demystifying]). Although the Lin estimator's underling OLS regressions make the strong assumption of linearity, this assumption may regularize estimates in a way that actually reduces average prediction error. Overall, these results are in line with recent attention in sociology to heterogeneous treatment effects and modeling them appropriately [@brand_2021_uncovering; @zhou_2022_attendance; @luo_2021_heterogeneous].  
 
-In conclusion, if researchers want small gains in accuracy, they may opt for AIPW, TMLE, or G-computation with a flexible machine learning algorithm. But these methods are computationally costly, taking as long as two minutes per dataset of 4,802 observations and 52 covariates, while OLS, PSM, and the Lin estimator each take a fraction of a second.^[The `grf` and `DoubleML`  packages are able to achieve faster computation time, at under 10 seconds in these samples. See tables of results in the Supplementary Material.] While double robust methods are useful for social scientists to understand, in most applications, OLS or PSM provide similar results. In certain circumstances, however, these double robust methods may be a better choice. Especially when paired with a highly flexible estimator like a SuperLearner or GRF, these methods may be slightly more accurate, and they can be useful when the number of covariates is high or even exceeds the number of observations. In longitudinal settings with time-varying confounders, they may be more helpful [@tran_2019_double]. They can also be useful as a sensitivity check; if researchers obtain similar estimates across traditional and double robust methods, they can be more confident in the reliability of their estimates.  
+This paper has a number of limitations. First, although it considers some of the most popular double robust, machine learning, traditional, and single robust methods, there are many methods that it does not evaluate, including variations and extensions of the three methods (such as a heterogeneity-robust DML [@chernozhukov_2018_double, p. C35]). Future research could also consider the efficacy of another set of double robust methods: Calibration methods such as Entropy Balancing have been shown to be double robust (under certain assumptions) despite not explicitly modeling the outcome or treatment assignment [@zhao_2017_entropy]. Second, although the simulations cover a wide range of data generating processes, they only consider continuous outcomes and binary treatments; simulations with binary or categorical outcomes and continuous or multi-armed treatments may yield different results. Third, this paper has considered only cross-sectional data; in longitudinal settings with time-varying confounders, double robust methods may more clearly outperform other methods [@tran_2019_double]. Finally, in considering only functional form misspecification, the simulations in this paper do not consider situations where ignorability does not hold. In particular, this paper does not evaluate situations where causal identification is misspecified [@keil_2018_resolving]. Future research should assess violations of this and other assumptions underlying these methods.    
+
+In conclusion, while double robust methods are useful for social scientists to understand due to their increasing popularity, they may not necessarily perform better than other methods. For the greatest accuracy, results here suggest that researchers should opt for AIPW, TMLE, or the non-double-robust G-computation in conjunction with a flexible machine learning algorithm. If computation time is a concern -- for example, if a researcher is calculating bootstrapped estimates, using replicate weights for complex survey data, or dealing with an extremely large sample -- then the Lin estimator is a good choice, with robustness to heterogeneous treatment effects and very low computation time. On the other hand, in most of the simulations presented here, standard OLS or PSM estimates do not diverge widely from top-performing methods. Studies that rely on these traditional methods may still have fairly accurate results.
+
+
+
+<!-- Rather than choosing the most flexible or double robust model, researchers should choose a model that is robust to heterogeneous effects, if they have any suspicion that such effects exist. Researchers may opt for AIPW, TMLE, or G-computation with a flexible machine learning algorithm, which produce the most accurate results in this study. -->
+
+<!-- if researchers want small gains in accuracy, they may opt for AIPW, TMLE, or G-computation with a flexible machine learning algorithm. But these methods are computationally costly, taking as long as two minutes per dataset of 4,802 observations and 52 covariates, while OLS, PSM, and the Lin estimator each take a fraction of a second.^[The `grf` and `DoubleML`  packages are able to achieve faster computation time, at under 10 seconds in these samples. See tables of results in the Supplementary Material.] While this computation time may seem trivial, it can balloon in larger samples -- as Table S3 in the Supplemental Material shows, GRF and SuperLearner estimators on samples of 96,040 took over 30 minutes to run, while OLS took only one second. In large complex survey data where proper standard errors computation requires the use of replicate weights, repeated estimation with these flexible machine learning estimators may result in unacceptably long computation time. -->
+
+
+
+<!-- In certain circumstances, however, these double robust methods may be a better choice. Especially when paired with a highly flexible estimator like a SuperLearner or GRF, these methods may be slightly more accurate, and they can be useful when the number of covariates is high or even exceeds the number of observations. In longitudinal settings with time-varying confounders, they may be more helpful [@tran_2019_double].   -->
 
 
 

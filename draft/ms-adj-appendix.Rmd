@@ -10,6 +10,7 @@ output:
     #latex_engine: xelatex
 always_allow_html: true
 header-includes:
+  - \usepackage{caption}
   #- \usepackage{setspace}\doublespace
   # - \usepackage[nolists, fighead, tabhead]{endfloat}
   # - \usepackage{endnotes}
@@ -532,6 +533,110 @@ superlearner_dml <- function(y_I, d_I, x_I, y_I_c, d_I_c, x_I_c,
   ))
 }
 
+
+lm_lin_continuous <- function (formula, covariates, data, weights, subset, clusters, 
+  se_type = NULL, ci = TRUE, alpha = 0.05, return_vcov = TRUE, 
+  try_cholesky = FALSE) 
+{
+  if (length(all.vars(f_rhs(formula))) > 1) {
+    stop("The `formula` argument, `", format(formula), "`, must only have the ", 
+      "treatment variable on the right-hand side of the formula. Covariates ", 
+      "should be specified in the `covariates` argument like so:\n`covariates = ", 
+      paste0("~ ", paste(all.vars(f_rhs(formula))[-1], 
+        sep = " + ")), "`.", "\n\n See ?lm_lin.")
+  }
+  if (!inherits(covariates, "formula")) {
+    stop("The `covariates` argument must be specified as a formula:\n", 
+      "You passed an object of class ", class(covariates))
+  }
+  cov_terms <- terms(covariates)
+  if (attr(cov_terms, "response") != 0) {
+    stop("Must not specify a response variable in `covariates`` formula.\n", 
+      "`covariates` must be a right-sided formula, such as '~ x1 + x2 + x3'")
+  }
+  if (length(attr(cov_terms, "order")) == 0) {
+    stop("`covariates` must have a variable on the right-hand side, not 0 or 1")
+  }
+  full_formula <- update(formula, reformulate(c(".", labels(cov_terms))))
+  datargs <- enquos(formula = full_formula, weights = weights, 
+    subset = subset, cluster = clusters)
+  data <- enquo(data)
+  model_data <- clean_model_data(data = data, datargs)
+  outcome <- as.matrix(model_data$outcome)
+  n <- nrow(outcome)
+  design_matrix <- model_data$design_matrix
+  weights <- model_data$weights
+  cluster <- model_data$cluster
+  has_intercept <- attr(terms(formula), "intercept")
+  treat_col <- which(attr(design_matrix, "assign") == 1)
+  treatment <- design_matrix[, treat_col, drop = FALSE]
+  design_mat_treatment <- colnames(design_matrix)[treat_col]
+  # if (any(!(treatment %in% c(0, 1)))) {
+  #   vals <- sort(unique(treatment))
+  #   if (has_intercept) 
+  #     vals <- vals[-1]
+  #   n_treats <- length(vals)
+  #   names(vals) <- paste0(colnames(design_matrix)[treat_col], 
+  #     vals)
+  #   treatment <- outer(drop(treatment), vals, function(x, 
+  #     y) as.numeric(x == y))
+  # }
+  demeaned_covars <- design_matrix[, setdiff(colnames(design_matrix), 
+    c(design_mat_treatment, "(Intercept)")), drop = FALSE]
+  if (is.numeric(weights)) {
+    center <- apply(demeaned_covars, 2, weighted.mean, weights)
+  }
+  else {
+    center <- colMeans(demeaned_covars)
+  }
+  demeaned_covars <- sweep(demeaned_covars, 2, center)
+  original_covar_names <- colnames(demeaned_covars)
+  colnames(demeaned_covars) <- paste0(ifelse(grepl("\\:|(^.+\\()", 
+    colnames(demeaned_covars)), paste0("(", colnames(demeaned_covars), 
+    ")"), colnames(demeaned_covars)), "_c")
+  n_treat_cols <- ncol(treatment)
+  n_covars <- ncol(demeaned_covars)
+  n_int_covar_cols <- n_covars * (n_treat_cols)
+  interacted_covars <- matrix(0, nrow = n, ncol = n_int_covar_cols)
+  interacted_covars_names <- character(n_int_covar_cols)
+  for (i in 1:n_covars) {
+    covar_name <- colnames(demeaned_covars)[i]
+    cols <- (i - 1) * n_treat_cols + (1:n_treat_cols)
+    interacted_covars[, cols] <- treatment * demeaned_covars[, 
+      i]
+    interacted_covars_names[cols] <- paste0(colnames(treatment), 
+      ":", covar_name)
+  }
+  colnames(interacted_covars) <- interacted_covars_names
+  if (has_intercept) {
+    X <- cbind(matrix(1, nrow = n, ncol = 1, dimnames = list(NULL, 
+      "(Intercept)")), treatment, demeaned_covars, interacted_covars)
+  }
+  else {
+    if (n_treat_cols == 1) {
+      X <- cbind(treatment, demeaned_covars, interacted_covars)
+    }
+    else {
+      X <- cbind(treatment, interacted_covars)
+    }
+  }
+  return_list <- lm_robust_fit(y = outcome, X = X, weights = weights, 
+    cluster = cluster, ci = ci, se_type = se_type, alpha = alpha, 
+    return_vcov = return_vcov, try_cholesky = try_cholesky, 
+    has_int = has_intercept, iv_stage = list(0))
+  return_list <- lm_return(return_list, model_data = model_data, 
+    formula = formula)
+  return_list[["scaled_center"]] <- center
+  setNames(return_list[["scaled_center"]], original_covar_names)
+  return_list[["call"]] <- match.call()
+  return(return_list)
+}
+
+environment(lm_lin_continuous) <- asNamespace('estimatr')
+assignInNamespace("lm_lin", lm_lin_continuous, ns = "estimatr")
+
+
+
 ## Functions using double robust packages ####
 aipw_sim <- function(dat, seed = 185){
 
@@ -637,8 +742,6 @@ tmle_sim <- function(dat, seed = 185){
 }
 
 dml_sim <- function(dat, seed = 185){
-  library(mlr3)
-  library(mlr3learners)
   
   start_time <- Sys.time()
   
@@ -722,24 +825,57 @@ model_matrix <- function(...){
   return(matrix_out)
 }
 
-compare_tbl <- function(model_list, treatment){
+p_val <- function(estimate, std.error){
+  z <- estimate / std.error
+  2*(1 - pnorm(abs(as.numeric(z))))
+}
+
+compare_tbl <- function(model_list, treatment, tidy = T){
   out_list <- list()
   k <- 1
   for(model_set in model_list){
-    names(model_set[[2]]) <- c('estimate', 'std.error')
+    names(model_set$grf) <- c('estimate', 'std.error')
     
+    if(tidy == T){
+    original_model <- tidy(model_set$original) %>%
+      filter(term == treatment)
+    } else{
+      original_model <- model_set$original
+    }
     
-    out_list[[k]] <- tidy(model_set[[1]]) %>%
-      filter(term == treatment) %>%
-      bind_rows(bind_rows(model_set[[2]])) %>%
-      bind_rows(model_set[[3]]) %>%
-      mutate(term = c('Original', 'AIPW (GRF)', 'DML (SuperLearner)'), p.value = p_val(estimate, std.error)) 
+    out_list[[k]] <- original_model %>%
+      bind_rows(bind_rows(model_set$grf)) %>%
+      bind_rows(model_set$dml) %>%
+      bind_rows(model_set$dml_cre) %>%
+      bind_rows(model_set$dml_wg_cre) %>%
+      mutate(term = c('Original', 'AIPW (GRF)', 'DML (SuperLearner)', 
+                      'DML (SuperLearner), CRE FE', 'DML (SuperLearner), hybrid FE'), 
+             p.value = p_val(estimate, std.error)) %>%
+      remove_rownames() %>%
+      tibble()
     
     k <- k+1
   }
   return(out_list)
 }
 
+# compare_tbl_notidy <- function(model_list){
+#   out_list <- list()
+#   k <- 1
+#   for(model_set in model_list){
+#     names(model_set[[2]]) <- c('estimate', 'std.error')
+#     
+#     
+#     out_list[[k]] <- model_set[[1]] %>%
+#       bind_rows(bind_rows(model_set[[2]])) %>%
+#       bind_rows(model_set[[3]]) %>%
+#       mutate(term = c('Original', 'AIPW (GRF)', 'DML (SuperLearner)'), p.value = p_val(estimate, std.error)) %>%
+#       tibble()
+#     
+#     k <- k+1
+#   }
+#   return(out_list)
+# }
 
 dml_grf <- function(outcome, treatment, covariates, clustervar = NULL, dataset, 
                     fe = T, target = 'treated', paper, model, drop_na_grf = F, seed = 123){
@@ -884,6 +1020,7 @@ dml_grf <- function(outcome, treatment, covariates, clustervar = NULL, dataset,
               dml_cre = dml_cre_out,
               dml_wg_cre = dml_wg_cre_out))
 }
+
 ```
 
 
@@ -1209,7 +1346,7 @@ lalonde_results_df %>%
 \newpage
 
 
-# Tables of Results
+# Main Simulations
 
 ```{r dorie-results-table}
 sim_results %>%
@@ -1232,13 +1369,15 @@ sim_results %>%
   kableExtra::kable(booktabs = T, 
                     digits = 3,
                     linesep = '',
-                    caption = 'Main datasets: Results of Monte Carlo simulations using the first 20 datasets from Dorie et al. (2019), 10 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
+                    caption = 'Main datasets: Results of Monte Carlo simulations using the first 20 DGPs from Dorie et al. (2019), 10 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
   kable_styling(latex_options = c("hold_position"))
 ```
 
 
 
 \newpage
+
+# Linear Simulations
 
 
 ```{r dorie-linear-results}
@@ -1259,14 +1398,73 @@ sim_results %>%
   kableExtra::kable(booktabs = T, 
                     digits = 3,
                     linesep = '',
-                    caption = 'Linear datasets: Results of Monte Carlo simulations using the two datasets from Dorie et al. (2019), with linear data generating processes, 100 replications each ("linear"). Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
+                    caption = 'Linear DGPs: Results of Monte Carlo simulations using the two datasets from Dorie et al. (2019), with linear data generating processes, 100 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
   kable_styling(latex_options = c("hold_position"))
 ```
 
 \newpage
 
+# Data Generating Processes
+
+```{r dgp}
+dgp_names <- c('Treat. assign.', 'Prob. of treat.',
+               'Overlap', 'Response surface',
+               'Alignment',
+               'Treat. heterogeneity')
+
+rename_vec <- names(aciccomp2016::parameters_2016)
+names(rename_vec) <- dgp_names
+
+sim_results_dgp <- sim_results %>%
+  filter(set == 'main') %>%
+  # mutate(paramter_num = ceiling(dataset/10)) %>%
+  left_join(mutate(aciccomp2016::parameters_2016, dorie_dataset = row_number())) %>%
+  rename(rename_vec) %>%
+  mutate(estimator = if_else(is.na(estimator), 'NA', estimator),
+         method_estimator = str_replace(method_estimator, 'superlearner', 'superl.')) %>%
+  mutate(method_estimator = factor(method_estimator, levels = unique({.$method_estimator}))) 
 
 
+dgp_list <- list()
+
+for(name in dgp_names){
+  
+  dgp_list[[name]] <- sim_results_dgp %>%
+    group_by(!!sym(name), method_estimator) %>%
+    summarize(bias = round(mean(ate - truth, na.rm = T), 3),
+            percent_bias = bias/sd(ate, na.rm = T),
+            rmse = round(sqrt(mean((ate - truth)^2, na.rm = T)), 3),
+            mae = median(abs(ate - truth), na.rm = T),
+            datasets = n_distinct(dataset)
+              )  %>%
+    ungroup() %>%
+    mutate(`DGP parameter` = name,
+          dgp_value = as.character(!!sym(name))) %>%
+    select(-!!sym(name))
+  
+}
+
+
+
+bind_rows(dgp_list) %>%
+  select(`DGP parameter`, dgp_value, everything()) %>%
+  arrange(`DGP parameter`, dgp_value, rmse) %>%  
+  # mutate(bias = as.character(bias),
+  #        rmse = as.character(rmse)) %>%
+  # mutate(across(bias:comp_time, function(x){as.character(round(x, 3))})) %>%
+  kableExtra::kable(booktabs = T, 
+                    digits = 3,
+                    linesep = '',
+                    longtable = T,
+                    caption = 'Data generating process: Within each DGP value, estimates are sorted from lowest to highest RMSE, based on Monte Carlo simulations using the first 20 DGPs from Dorie et al. (2019), 10 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and datasets shows the number of distinct datasets in the simulations with each particular DGP parameter.') %>%
+  kable_styling(latex_options = c("hold_position")) #'repeat_header')) 
+  
+  
+```
+
+\newpage
+
+# Sample Sizes
 
 ```{r dorie-results-size}
 sim_results %>%
@@ -1288,162 +1486,864 @@ sim_results %>%
                     digits = 3,
                     linesep = '',
                     longtable = T,
-                    caption = 'Sample size: Results of Monte Carlo simulations using dataset 7 from Dorie et al. (2019) with varying sample sizes, 20 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
+                    caption = 'Sample size: Results of Monte Carlo simulations using DGP 7 from Dorie et al. (2019) with varying sample sizes, 20 replications each. Percent bias is calculated as the estimator\'s bias as a percentage of its standard error, rmse is root mean squared error, mae is median absolute error, and comp\\_time is median computation time measured in seconds for each dataset.') %>%
   kable_styling(latex_options = c("hold_position")) #'repeat_header')) 
 ```
 
 \newpage
 
-# Replications with Fixed Effects
 
-The tables below present estimates from the *ASR* replications discussed in the main text, but with the addition of two other models implementing methods proposed by @clarke_2024_double that incorporate individual or group fixed effects into DML. The authors' package, `XTDML`, builds on the `DoubleML` package. I use two of their procedures. First, correlated random effects (CRE) models explicitly model the correlation between the group-level components in both the treatment and outcome models. Second, the authors' "hybrid" model combines CRE with a within-group estimator that partials out group means from all variables, similar to the mechanics of fixed effects in OLS. I present results using fixed effects for each model, whether or not the original model uses fixed effects. The original models from @aksoy_2022_commitment use fixed effects throughout. @biegert_2023_they do not employ fixed effects in any of their original models. @nussio_2024_dark uses fixed effects in the fourth model in Tables 2 and 4 and in all models in Table 5.
+<!-- # Replications -->
 
+<!-- ```{r aksoy, eval = F} -->
+<!-- aksoy <- read_dta(here('replication', 'aksoy.dta')) %>% -->
+<!--   mutate(cid_num = as.integer(factor(cid))) %>% -->
+<!--   as_factor() -->
 
-```{r rep-aksoy}
-readRDS(here('replication', 'aksoy_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = '{stars}. Covariates include GDP growth, population, turnout, number of parliamentary seats in province in Model 2 and 3; Models 3 also adjusts for the lagged value of the dependent variable (i.e., one election lagged Islamic votes); cluster robust standard errors are in parentheses. The AIPW (GRF) model does not drop incomplete observations.') %>%
-  huxtable::insert_row(c('Covariates', 'No', rep('Yes', 2)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Lagged dependent variable', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Election year fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Province fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-4):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-4), 2:4) %>%
-  huxtable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"') %>%
-  huxtable::set_width(.8) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
+<!-- # first three models from table 2 -->
 
-# read_rds(here('replication', 'aksoy_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7:8, 1:4, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:4) %>%
-#   flextable::hline(9) %>%
-#   flextable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"')
-```
+<!-- m1 <- lm(ISL ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` +  -->
+<!--      `_Y66` + `_Y70` + `_Y71` + dlen + cid, -->
+<!--    data = filter(aksoy, electyr == T)) # %>% -->
+<!--   # tidy() %>% -->
+<!--   # filter(!str_detect(term, 'cid'), !str_detect(term, '_Y')) -->
 
-\newpage
+<!-- m2 <- lm(ISL ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` +  -->
+<!--      `_Y66` + `_Y70` + `_Y71` + dlen + cid + gdp_g + t + m + pop, -->
+<!--    data = aksoy)  -->
+<!--   # tidy() %>% -->
+<!--   # filter(!str_detect(term, 'cid'), !str_detect(term, '_Y')) -->
 
-```{r rep-biegert}
-readRDS(here('replication', 'biegert_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = '{stars}. With no control variables, Model 1 could not be estimated using DML with a SuperLearner. Model 2 adjusts for year (fixed effects in original model), height (cm), position, age at league entry, being Black, and NBA tenure. Model 3 adds controls for the previous year\'s average points per 36 minutes, average assists per 36 minutes, average rebounds per 36 minutes, minutes played, whether the team reached playoffs, the team\'s win percentage, and whether it was a big market team. Model 4 adds controls for current average points, average assists, and average rebounds per 36 minutes. Model 5 additionally controls for current minutes played, whether the team reaches the playoffs, the team win percentage, and whether it is a big market team. Player clustered standard errors are in parentheses. None of the original models includes player fixed effects. The AIPW (GRF) model does not drop incomplete observations.') %>%
-  huxtable::insert_row(c('Baseline confounders', 'No', rep('Yes', 4)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Prior situation + performance', rep('No', 2), rep('Yes', 3)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Current performance', rep('No', 3), rep('Yes', 2)), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Current situation', rep('No', 4), rep('Yes', 1)), after = nrow(.) - 1) %>%
-  # huxtable::insert_row(c('Cumul. AS + cumul. mediators', rep('No', 5), 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-4):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-4), 2:6) %>%
-  huxtable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"') %>%
-  huxtable::set_width(1) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
+<!-- m3 <- lm(ISL ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` +  -->
+<!--      `_Y66` + `_Y70` + `_Y71` + dlen + cid + gdp_g + t + m + pop + l_ISL, -->
+<!--    data = aksoy)  -->
+<!--   # tidy() %>% -->
+<!--   # filter(!str_detect(term, 'cid'), !str_detect(term, '_Y')) -->
 
-
-# read_rds(here('replication', 'biegert_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7:11, 1:7, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:7) %>%
-#   flextable::padding(padding = 0, part = "all") %>% 
-#   flextable::autofit() %>%
-#   flextable::hline(12) %>%
-#   flextable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"')
-```
-
-\newpage
-
-```{r rep-nussio-ind}
-readRDS(here('replication', 'nussio_ind_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = "{stars}. Data come from a representative survey of residents of Mexico City conducted in February 2022. Models estimate the effect of the log number of names that respondents know in their colonia (neighborhood) on whether they had ever participate in a lynching. Model 1 controls for the extent to which people trust others living in their neighborhood. Model 2 adds controls for education, age, female, number of light bulbs, and unemployment. Model 3 additionally controls for employment, being Catholic or non-religious, whether someone has participated in a fight, whether parents live in the colonia, trust in government, garbage on the street, and residential street block. Colonia clustered standard errors are in parentheses. Model 4 adds colonia fixed effects. The AIPW (GRF) model does not drop incomplete observations.") %>%
-  huxtable::insert_row(c('Colonia FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-2):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-2), 2:5) %>%
-  huxtable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"') %>%
-  huxtable::set_width(.8) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
+<!-- # aksoy %>% -->
+<!-- #   filter(electyr == T) %>% -->
+<!-- #   mutate(across(c(`_Y28`, `_Y32`, `_Y42`, `_Y46`, `_Y50`, `_Y54`, `_Y57`,  -->
+<!-- #                   `_Y62`, `_Y66`, `_Y70`, `_Y71`), ~ .x - mean(.x, na.rm = T))) %>% -->
+<!-- #   estimatr::lm_robust(ISL ~ dlen*(`_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` +  -->
+<!-- #                                     `_Y54` + `_Y57` + `_Y62` + `_Y66` + `_Y70` + `_Y71` + cid), -->
+<!-- #    data = .) %>% -->
+<!-- #   tidy() %>% -->
+<!-- #   filter(term == 'dlen') -->
+<!-- #  -->
+<!-- #  -->
+<!-- # m1_lin <- estimatr::lm_robust(ISL ~ dlen*(`_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` + `_Y66` + `_Y70` + `_Y71`) + cid, -->
+<!-- #    data = filter(aksoy, electyr == T)) %>% -->
+<!-- #   tidy() %>% -->
+<!-- #   filter(term == 'dlen') -->
+<!-- #  -->
+<!-- #  -->
+<!-- # m1_lin <- lm_lin_continuous(ISL ~ dlen, -->
+<!-- #                            covariates = ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` + -->
+<!-- #      `_Y66` + `_Y70` + `_Y71` + cid, -->
+<!-- #    data = filter(aksoy, electyr == T)) %>% -->
+<!-- #   tidy() %>% -->
+<!-- #   filter(term == 'dlen') -->
+<!-- #  -->
+<!-- #  -->
+<!-- # m2_lin <- lm_lin_continuous(ISL ~ dlen, -->
+<!-- #                            covariates = ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` + -->
+<!-- #      `_Y66` + `_Y70` + `_Y71` + cid + gdp_g + t + m + pop, -->
+<!-- #    data = aksoy) %>% -->
+<!-- #   tidy() %>% -->
+<!-- #   filter(term == 'dlen')  -->
+<!-- #  -->
+<!-- #  -->
+<!-- # m3_lin <- lm_lin_continuous(ISL ~ dlen, -->
+<!-- #                            covariates = ~ `_Y28` + `_Y32` + `_Y42` + `_Y46` + `_Y50` + `_Y54` + `_Y57` + `_Y62` + -->
+<!-- #      `_Y66` + `_Y70` + `_Y71` + dlen + cid + gdp_g + t + m + pop + l_ISL, -->
+<!-- #    data = aksoy) %>% -->
+<!-- #   tidy() %>% -->
+<!-- #   filter(term == 'dlen')  -->
 
 
 
-# read_rds(here('replication', 'nussio_ind_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7:8, 1:5, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:5) %>%
-#   flextable::hline(9) %>%
-#   flextable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"')
-```
 
-\newpage
-
-```{r rep-nussio-ag}
-readRDS(here('replication', 'nussio_ag_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = "{stars}. Models estimate the effect of neighborly cooperation -- operationalized by the proportion of respondents who think that most neighbors help each other in problems related to electric lighting -- on the log municipal lynching rate. Model 1 adds controls for the proportion of respondents in a municipality that trust their neighbors. Model controls for population, area in square kilometers, poverty rate, Gini coefficient, share indigenous people, non-religious population, homicide rate, and robbery rate. Model 3 adds controls for household victimization and trust in army. Model 4 adds estado (state) fixed effects. Municipality clustered standard errors are in paratheses. The AIPW (GRF) model does not drop incomplete observations.") %>%
-  huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Estado FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>%
-  huxtable::insert_row(c('Estado clustered SE', 'Yes', 'Yes', 'Yes', 'No'), after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-3):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-3), 2:5) %>%
-  huxtable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"') %>%
-  huxtable::set_width(.8) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
-
-# read_rds(here('replication', 'nussio_ag_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7:9, 1:5, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:5) %>%
-#   flextable::hline(10) %>%
-#   flextable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"')
-```
-
-\newpage
-
-```{r rep-nussio-ne}
-readRDS(here('replication', 'nussio_ne_rep.RDS')) %>%
-  huxtable::huxreg(statistics = NA,
-                   note = "{stars}. Models estimate the effect of the Puebla earthquake on September 19, 2017, on the number of lynching events. Data is a panel of Mexican municipalities from 2000 to 2020. Specific independent variables include having an earthquake within 250 km (Models 1 and 2) or having earthquake damage (Models 3 and 4), each interacted with a post-2017 indicator variable. Municipality clustered standard errors are in parentheses. The original models include two-way fixed effects for year and municipality. Model 2 and 4 additionally control for homicides, robberies, kidnappings, and infant mortality. Machine learning models control for year. All models drop incomplete observations; Models 1, and 3 have 51,597 observations, while Models 2, and 4 have 17,225 observations. Due to complications with continuous treatment effects, I do not present the original Models 5 and 6, where the independent variable was distance from the earthquake.") %>%
-  huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes'), 
-                       after = nrow(.) - 1) %>%
-  huxtable::set_top_border((nrow(.)-1):(nrow(.)-1), value = 0) %>%
-  huxtable::set_top_border((nrow(.)-1), 2:5) %>%
-  huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
-  huxtable::set_width(.8) %>%
-  huxtable::set_all_padding(0) %>%
-  huxtable::set_latex_float('h!')
+<!-- # aksoy_drop_na_y <- filter(aksoy, !is.na(ISL)) -->
 
 
 
-# Final table
-# huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1),
-#                                   list(m2, grf_out2, dml_out2),
-#                                   list(m3, grf_out3, dml_out3),
-#                                   list(m4, grf_out4, dml_out4),
-#                                   list(m5, grf_out5, dml_out5),
-#                                   list(m6, grf_out6, dml_out6)),
-#                              tidy = F),
-#                  statistics = NA) %>%
-#   huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes', 'No', 'Yes'), 
-#                        after = nrow(.) - 1) %>%
-#   huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>%
-
-# read_rds(here('replication', 'nussio_ne_tab.RDS')) %>%
-#   huxtable::as_flextable() %>%
-#   flextable::hline(7, 1:7, border = officer::fp_border(width = 0)) %>%
-#   flextable::hline(7, 2:7) %>%
-#   flextable::hline(8) %>%
-#   flextable::padding(padding = 0, part = "all") %>% 
-#   flextable::autofit() %>%
-#   flextable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"')
-```
 
 
-\newpage
+<!-- m1_grf_dml <- dml_grf(outcome = 'ISL',  -->
+<!--         treatment = 'dlen',  -->
+<!--         covariates = c('year'),  -->
+<!--         clustervar = 'cid_num', -->
+<!--         dataset = aksoy, -->
+<!--         target = 'all') -->
 
 
-# References
+<!-- m2_grf_dml <- dml_grf(outcome = 'ISL',  -->
+<!--         treatment = 'dlen',  -->
+<!--         covariates = c('year', 'gdp_g', 't', 'm', 'pop'),  -->
+<!--         clustervar = 'cid_num', -->
+<!--         dataset = aksoy, -->
+<!--         target = 'all') -->
 
-<div id="refs"></div>
+<!-- m3_grf_dml <- dml_grf(outcome = 'ISL',  -->
+<!--         treatment = 'dlen',  -->
+<!--         covariates = c('year', 'gdp_g', 't', 'm', 'pop', 'l_ISL'),  -->
+<!--         clustervar = 'cid_num', -->
+<!--         dataset = aksoy, -->
+<!--         target = 'all') -->
+
+
+
+<!-- m1 <- data.frame(estimate = 7.159, std.error = 2.539) -->
+<!-- m2 <- data.frame(estimate = 7.349, std.error = 2.491) -->
+<!-- m3 <- data.frame(estimate = 5.317, std.error = 1.855) -->
+
+<!-- compare_tbl(list(append(list(original = m1), m1_grf_dml),  -->
+<!--                                   append(list(original = m2), m2_grf_dml),  -->
+<!--                                   append(list(original = m3), m3_grf_dml)), -->
+<!--                              tidy = F) %>% -->
+<!--   write_rds(here('replication', 'aksoy_rep.RDS')) -->
+
+
+<!-- # huxtable::huxreg(compare_tbl(list(append(list(original = m1), m1_grf_dml),  -->
+<!-- #                                   append(list(original = m2), m2_grf_dml),  -->
+<!-- #                                   append(list(original = m3), m3_grf_dml)), -->
+<!-- #                              tidy = F), -->
+<!-- #                  statistics = NA) %>% -->
+<!-- #   huxtable::insert_row(c('Covariates', 'No', rep('Yes', 2)), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::insert_row(c('Lagged dependent variable', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::set_caption('Replication of aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"') %>% -->
+<!-- #   write_rds(here('replication', 'aksoy_tab.RDS')) -->
+<!-- #  -->
+<!-- # read_rds(here('replication', 'aksoy_rep.RDS')) %>% -->
+<!-- #   huxtable::huxreg() -->
+
+
+
+
+
+<!-- ``` -->
+
+
+<!-- ```{r biegert, eval = F} -->
+<!-- # Table 3 -->
+
+<!-- biegert <- read_dta(here('replication', 'biegert.dta')) %>% -->
+<!--   filter(sampleC == 1) %>% -->
+<!--   mutate(year_num = as.numeric(year), -->
+<!--          allstar_y_num = as.numeric(allstar_y), -->
+<!--          allstar_x_num = as.numeric(allstar_x), -->
+<!--     across(c(allstar_y, allstar_x, year), as.factor), -->
+<!--     player_id_num = as.integer(factor(player_id))) %>% -->
+<!--   as_factor() -->
+
+<!-- m1 <- glm(allstar_y ~ allstar_x,  -->
+<!--           data = filter(biegert, sampleC == 1), family = 'binomial') %>% -->
+<!--   margins::margins(variables = 'allstar_x',  -->
+<!--                    vcov = sandwich::vcovCL(., cluster = ~player_id))  -->
+
+<!-- m2 <- glm(allstar_y ~ allstar_x + height + pos + age_0 + age_0_2 + Black + time + time_2 + year,  -->
+<!--           data = filter(biegert, sampleC == 1), -->
+<!--           family = binomial(link = 'logit')) %>% -->
+<!--   margins::margins(variables = 'allstar_x',  -->
+<!--                    vcov = sandwich::vcovCL(., cluster = ~player_id))  -->
+
+<!-- m3 <- glm(allstar_y ~ allstar_x + height + pos + age_0 + age_0_2 + Black + time + time_2 + year + -->
+<!--             pts_sdt_nd + ast_sdt_nd + trb_sdt_nd + min_played_nd +  playoffs_nd + win_nd + bigm_nd,  -->
+<!--           data = filter(biegert, sampleC == 1), -->
+<!--           family = binomial(link = 'logit')) %>% -->
+<!--   margins::margins(variables = 'allstar_x',  -->
+<!--                    vcov = sandwich::vcovCL(., cluster = ~player_id))  -->
+
+<!-- m4 <- glm(allstar_y ~ allstar_x + height + pos + age_0 + age_0_2 + Black + time + time_2 + year + -->
+<!--             pts_sdt_nd + ast_sdt_nd + trb_sdt_nd + min_played_nd +  playoffs_nd + win_nd + bigm_nd + -->
+<!--             pts_sdt_t + ast_sdt_t + trb_sdt_t,  -->
+<!--           data = filter(biegert, sampleC == 1), -->
+<!--           family = binomial(link = 'logit')) %>% -->
+<!--   margins::margins(variables = 'allstar_x',  -->
+<!--                    vcov = sandwich::vcovCL(., cluster = ~player_id))  -->
+
+<!-- m5 <- glm(allstar_y ~ allstar_x + height + pos + age_0 + age_0_2 + Black + time + time_2 + year + -->
+<!--             pts_sdt_nd + ast_sdt_nd + trb_sdt_nd + min_played_nd +  playoffs_nd + win_nd + bigm_nd + -->
+<!--             pts_sdt_t + ast_sdt_t + trb_sdt_t + -->
+<!--             min_played_t + playoffs_t + win_t + bigm_t,  -->
+<!--           data = filter(biegert, sampleC == 1), -->
+<!--           family = binomial(link = 'logit')) %>% -->
+<!--   margins::margins(variables = 'allstar_x',  -->
+<!--                    vcov = sandwich::vcovCL(., cluster = ~player_id))  -->
+
+<!-- m6 <- glm(allstar_y ~ allstar_x + allstar_hi + height + pos + age_0 + age_0_2 + Black + time + time_2 + year + -->
+<!--             pts_sdt_nd + ast_sdt_nd + trb_sdt_nd + min_played_nd +  playoffs_nd + win_nd + bigm_nd + -->
+<!--             pts_sdt_t + ast_sdt_t + trb_sdt_t + -->
+<!--             min_played_t + playoffs_t + win_t + bigm_t + -->
+<!--             pts_sdt_hi + ast_sdt_hi + trb_sdt_hi + min_played_hi + playoffs_hi + win_hi + bigm_hi,  -->
+<!--           data = filter(biegert, sampleC == 1), -->
+<!--           family = binomial(link = 'logit')) %>% -->
+<!--   margins::margins(variables = 'allstar_x',  -->
+<!--                    vcov = sandwich::vcovCL(., cluster = ~player_id))  -->
+
+
+
+
+
+<!-- # M1  -->
+<!-- set.seed(123) -->
+<!-- Y <- as.numeric(biegert[['allstar_y']]) -->
+<!-- X <- data.frame(var = rep(NA_integer_, length(Y))) -->
+<!-- W <- as.numeric(biegert[['allstar_x']]) -->
+
+<!-- grf_model1 <- grf::causal_forest(X = X, Y = Y, W = W, seed = 123, -->
+<!--                       clusters = biegert$player_id_num -->
+<!--                       ) -->
+
+<!-- grf_out1 <- grf::average_treatment_effect(grf_model1, target.sample = 'all') -->
+
+
+<!-- dml_out1 <- data.frame(estimate = NA, -->
+<!--                        std.error = NA) -->
+<!-- dml_cre_out1 <- dml_out1 -->
+<!-- dml_hybrid_out1 <- dml_out1 -->
+
+<!-- # M2 -->
+<!-- m2_grf_dml <- dml_grf(outcome = 'allstar_y_num',  -->
+<!--         treatment = 'allstar_x_num',  -->
+<!--         covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num'),  -->
+<!--         clustervar = 'player_id_num', -->
+<!--         dataset = biegert, -->
+<!--         target = 'all') -->
+
+
+<!-- # M3  -->
+<!-- m3_grf_dml <- dml_grf(outcome = 'allstar_y_num',  -->
+<!--         treatment = 'allstar_x_num',  -->
+<!--         covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num', -->
+<!--                        'pts_sdt_nd', 'ast_sdt_nd', 'trb_sdt_nd', 'min_played_nd',  'playoffs_nd', 'win_nd', 'bigm_nd'),  -->
+<!--         clustervar = 'player_id_num', -->
+<!--         dataset = biegert, -->
+<!--         target = 'all') -->
+
+<!-- # M4 -->
+<!-- m4_grf_dml <- dml_grf(outcome = 'allstar_y_num',  -->
+<!--         treatment = 'allstar_x_num',  -->
+<!--         covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num', -->
+<!--                        'pts_sdt_nd', 'ast_sdt_nd', 'trb_sdt_nd', 'min_played_nd',  'playoffs_nd', 'win_nd', 'bigm_nd', -->
+<!--                        'pts_sdt_t', 'ast_sdt_t', 'trb_sdt_t'),  -->
+<!--         clustervar = 'player_id_num', -->
+<!--         dataset = biegert, -->
+<!--         target = 'all') -->
+
+
+<!-- # M5 -->
+<!-- m5_grf_dml <- dml_grf(outcome = 'allstar_y_num',  -->
+<!--         treatment = 'allstar_x_num',  -->
+<!--         covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num', -->
+<!--                        'pts_sdt_nd', 'ast_sdt_nd', 'trb_sdt_nd', 'min_played_nd',  'playoffs_nd', 'win_nd', 'bigm_nd', -->
+<!--                        'pts_sdt_t', 'ast_sdt_t', 'trb_sdt_t', -->
+<!--                        'min_played_t', 'playoffs_t', 'win_t', 'bigm_t'),  -->
+<!--         clustervar = 'player_id_num', -->
+<!--         dataset = biegert, -->
+<!--         target = 'all') -->
+
+
+
+<!-- # # M6 -->
+<!-- # m6_grf_dml <- dml_grf(outcome = 'allstar_y_num',  -->
+<!-- #         treatment = 'allstar_x_num',  -->
+<!-- #         covariates = c('height', 'pos', 'age_0', 'Black', 'time', 'year_num', -->
+<!-- #                        'pts_sdt_nd', 'ast_sdt_nd', 'trb_sdt_nd', 'min_played_nd',  'playoffs_nd', 'win_nd', 'bigm_nd', -->
+<!-- #                        'pts_sdt_t', 'ast_sdt_t', 'trb_sdt_t', -->
+<!-- #                        'min_played_t', 'playoffs_t', 'win_t', 'bigm_t', -->
+<!-- #                        'pts_sdt_hi', 'ast_sdt_hi', 'trb_sdt_hi', 'min_played_hi', 'playoffs_hi', 'win_hi', 'bigm_hi'),  -->
+<!-- #         clustervar = 'player_id_num', -->
+<!-- #         dataset = biegert, -->
+<!-- #         target = 'all') -->
+
+<!-- out_empty <- grf_out1 -->
+<!-- out_empty$estimate <- NA -->
+<!-- out_empty$std.err <-  -->
+
+<!-- compare_tbl(model_list = list( -->
+<!--                  list(original = m1, grf = grf_out1, dml = dml_out1, dml_cre = dml_cre_out1, dml_wg_cre = dml_hybrid_out1),  -->
+<!--                  append(list(original = m2), m2_grf_dml),  -->
+<!--                  append(list(original = m3), m3_grf_dml), -->
+<!--                  append(list(original = m4), m4_grf_dml), -->
+<!--                  append(list(original = m5), m5_grf_dml), -->
+<!--             treatment = 'allstar_x1', -->
+<!--             tidy = T) %>% -->
+<!--   write_rds(here('replication', 'biegert_rep.RDS')) -->
+
+
+<!-- # Final table -->
+<!-- # huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1), -->
+<!-- #                                   list(m2, grf_out2, dml_out2), -->
+<!-- #                                   list(m3, grf_out3, dml_out3), -->
+<!-- #                                   list(m4, grf_out4, dml_out4), -->
+<!-- #                                   list(m5, grf_out5, dml_out5), -->
+<!-- #                                   list(m6, grf_out6, dml_out6)), -->
+<!-- #                              treatment = 'allstar_x1'), -->
+<!-- #                  statistics = NA) %>% -->
+<!-- #   huxtable::insert_row(c('Baseline confounders', 'No', rep('Yes', 5)), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::insert_row(c('Prior situation + performance', rep('No', 2), rep('Yes', 4)), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::insert_row(c('Current performance', rep('No', 3), rep('Yes', 3)), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::insert_row(c('Current situation', rep('No', 4), rep('Yes', 2)), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::insert_row(c('Cumul. AS + cumul. mediators', rep('No', 5), 'Yes'), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"') %>% -->
+<!-- #   write_rds(here('replication', 'biegert_tab.RDS')) -->
+<!-- #  -->
+<!-- # read_rds(here('replication', 'biegert_tab.RDS')) -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r nussio-ind, eval = F} -->
+<!-- nussio_ind <- read_dta(here('replication/nussio_2024', 'Mexico City Individual data.dta')) %>% -->
+<!--   filter(if_all(c(PARP, lognombre), ~!is.na(.x))) %>% -->
+<!--   mutate(across(c(PARP, IT1, ED, BASURA), as.numeric), -->
+<!--          cve_col_num = as.numeric(factor(cve_col))) %>% -->
+<!--   as_factor() -->
+
+
+
+
+
+<!-- ## Table 2 #### (individual analysis) -->
+
+<!-- m1 <- lm(PARP ~ lognombre + IT1,  -->
+<!--          nussio_ind) %>% -->
+<!--   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve_col)) -->
+
+<!-- m2 <- lm(PARP ~ lognombre + IT1 +  -->
+<!--            ED + age + female + INGi + unemployed,  -->
+<!--          nussio_ind) %>% -->
+<!--   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve_col)) -->
+
+<!-- m3 <- lm(PARP ~ lognombre + IT1 +  -->
+<!--            ED + age + female + INGi + unemployed + -->
+<!--            HER + catholic + nonreligious + working + BASURA + RESS +  -->
+<!--            PELEA  + PADRES + index_trustgov,  -->
+<!--          nussio_ind) %>% -->
+<!--   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve_col)) -->
+
+<!-- m4 <- lm(PARP ~ lognombre + IT1 +  -->
+<!--            ED + age + female + INGi + unemployed + -->
+<!--            HER + catholic + nonreligious + working + BASURA + RESS +  -->
+<!--            PELEA  + PADRES + index_trustgov + -->
+<!--            col, nussio_ind) %>% -->
+<!--   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve_col))  -->
+<!--   # tidy() %>% -->
+<!--   # filter(!(str_detect(term, 'col'))) -->
+
+
+<!-- # M1  -->
+<!-- m1_grf_dml <- dml_grf(outcome = 'PARP',  -->
+<!--         treatment = 'lognombre',  -->
+<!--         covariates = c('IT1'),  -->
+<!--         clustervar = 'cve_col_num', -->
+<!--         dataset = nussio_ind, -->
+<!--         target = 'all') -->
+
+<!-- # M2  -->
+<!-- m2_grf_dml <- dml_grf(outcome = 'PARP',  -->
+<!--         treatment = 'lognombre',  -->
+<!--         covariates = c('IT1', 'ED', 'age', 'female', 'INGi', 'unemployed'),  -->
+<!--         clustervar = 'cve_col_num', -->
+<!--         dataset = nussio_ind, -->
+<!--         target = 'all') -->
+
+<!-- # M3 & M4 (M4 has fixed effects) -->
+<!-- m3_grf_dml <- dml_grf(outcome = 'PARP',  -->
+<!--         treatment = 'lognombre',  -->
+<!--         covariates = c('IT1', 'ED', 'age', 'female', 'INGi', 'unemployed', -->
+<!--                        'HER', 'catholic', 'nonreligious', 'working', 'BASURA', 'RESS',  -->
+<!--                        'PELEA' , 'PADRES', 'index_trustgov'),  -->
+<!--         clustervar = 'cve_col_num', -->
+<!--         dataset = nussio_ind, -->
+<!--         target = 'all') -->
+
+<!-- m4_grf_dml <- m3_grf_dml -->
+
+
+<!-- compare_tbl(model_list = list(append(list(original = m1), m1_grf_dml), -->
+<!--                               append(list(original = m2), m2_grf_dml),  -->
+<!--                               append(list(original = m3), m3_grf_dml), -->
+<!--                               append(list(original = m4), m4_grf_dml)), -->
+<!--             treatment = 'lognombre', -->
+<!--             tidy = T) %>% -->
+<!--   write_rds(here('replication', 'nussio_ind_rep.RDS')) -->
+
+
+<!-- # Final table -->
+<!-- # huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1), -->
+<!-- #                                   list(m2, grf_out2, dml_out2), -->
+<!-- #                                   list(m3, grf_out3, dml_out3), -->
+<!-- #                                   list(m4, grf_out4, dml_out4)), -->
+<!-- #                              treatment = 'lognombre'), -->
+<!-- #                  statistics = NA) %>% -->
+<!-- #   huxtable::insert_row(c('Colonia FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"') %>% -->
+<!-- #   write_rds(here('replication', 'nussio_ind_tab.RDS')) -->
+<!-- #  -->
+<!-- # read_rds(here('replication', 'nussio_ind_tab.RDS')) -->
+<!-- ``` -->
+
+<!-- ```{r nussio-ag, eval = F} -->
+<!-- ## Table 4 #### (aggregate analysis) -->
+<!-- nussio_ag <- read_dta(here('replication/nussio_2024',  -->
+<!--                            'Mexico Municipality Cross-Sectional Data.dta')) %>% -->
+<!--   filter(if_all(c(loglynchpermio, organized_lighting_mean), ~!is.na(.x))) %>% -->
+<!--   mutate(estado_num = as.numeric(estado)) %>% -->
+<!--   # mutate(across(c(PARP, IT1, ED, BASURA), as.numeric), -->
+<!--   #        cve_col_num = as.integer(factor(cve_col))) %>% -->
+<!--   as_factor() -->
+
+<!-- nussio_ag_drop_na <- nussio_ag %>% drop_na(loglynchpermio, organized_lighting_mean, -->
+<!--                           trust_neighbors_mean, problem_lighting_mean, -->
+<!--                           c_poptot, area, pconeval_poverty_pobreza_pob,  -->
+<!--                           coneval_gini_coeficientedegini, -->
+<!--                           indigenous, c_poptot_norelpop, homirate, robberyrate, -->
+<!--            victim_household_before_prev_yea, trust_army_mean) -->
+
+<!-- m1 <- lm(loglynchpermio ~ organized_lighting_mean + trust_neighbors_mean + problem_lighting_mean, -->
+<!--          nussio_ag) %>% -->
+<!--   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~estado)) -->
+
+<!-- m2 <- lm(loglynchpermio ~ organized_lighting_mean + trust_neighbors_mean + problem_lighting_mean + -->
+<!--            c_poptot + area + pconeval_poverty_pobreza_pob + coneval_gini_coeficientedegini +  -->
+<!--            indigenous + c_poptot_norelpop + homirate + robberyrate, -->
+<!--          nussio_ag) %>% -->
+<!--   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~estado)) -->
+
+<!-- m3 <- lm(loglynchpermio ~ organized_lighting_mean + trust_neighbors_mean + problem_lighting_mean + -->
+<!--            c_poptot + area + pconeval_poverty_pobreza_pob + coneval_gini_coeficientedegini +  -->
+<!--            indigenous + c_poptot_norelpop + homirate + robberyrate + -->
+<!--            victim_household_before_prev_yea + trust_army_mean, -->
+<!--          nussio_ag) %>% -->
+<!--   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~estado)) -->
+
+<!-- m4 <- lm(loglynchpermio ~ organized_lighting_mean + trust_neighbors_mean + problem_lighting_mean + -->
+<!--            c_poptot + area + pconeval_poverty_pobreza_pob + coneval_gini_coeficientedegini +  -->
+<!--            indigenous + c_poptot_norelpop + homirate + robberyrate + -->
+<!--            victim_household_before_prev_yea + trust_army_mean +  -->
+<!--            estado, -->
+<!--          nussio_ag) -->
+
+
+
+<!-- # M1  -->
+<!-- m1_grf_dml <- dml_grf(outcome = 'loglynchpermio',  -->
+<!--         treatment = 'organized_lighting_mean',  -->
+<!--         covariates = c('trust_neighbors_mean', 'problem_lighting_mean'),  -->
+<!--         clustervar = 'estado_num', -->
+<!--         dataset = nussio_ag, -->
+<!--         target = 'all') -->
+
+
+<!-- # M2 -->
+<!-- m2_grf_dml <- dml_grf(outcome = 'loglynchpermio',  -->
+<!--         treatment = 'organized_lighting_mean',  -->
+<!--         covariates = c('trust_neighbors_mean', 'problem_lighting_mean', -->
+<!--                        'c_poptot', 'area', 'pconeval_poverty_pobreza_pob', 'coneval_gini_coeficientedegini',  -->
+<!--            'indigenous', 'c_poptot_norelpop', 'homirate', 'robberyrate'),  -->
+<!--         clustervar = 'estado_num', -->
+<!--         dataset = nussio_ag, -->
+<!--         target = 'all') -->
+
+<!-- # M3 -->
+<!-- m3_grf_dml <- dml_grf(outcome = 'loglynchpermio',  -->
+<!--         treatment = 'organized_lighting_mean',  -->
+<!--         covariates = c('trust_neighbors_mean', 'problem_lighting_mean', -->
+<!--                        'c_poptot', 'area', 'pconeval_poverty_pobreza_pob', 'coneval_gini_coeficientedegini',  -->
+<!--            'indigenous', 'c_poptot_norelpop', 'homirate', 'robberyrate', -->
+<!--            'victim_household_before_prev_yea', 'trust_army_mean'),  -->
+<!--         clustervar = 'estado_num', -->
+<!--         dataset = nussio_ag, -->
+<!--         target = 'all') -->
+
+<!-- # M4 -->
+<!-- m4_grf_dml <- m3_grf_dml -->
+
+
+<!-- compare_tbl(model_list = list(append(list(original = m1), m1_grf_dml), -->
+<!--                               append(list(original = m2), m2_grf_dml),  -->
+<!--                               append(list(original = m3), m3_grf_dml), -->
+<!--                               append(list(original = m4), m4_grf_dml)), -->
+<!--             treatment = 'organized_lighting_mean', -->
+<!--             tidy = T) %>% -->
+<!--   write_rds(here('replication', 'nussio_ag_rep.RDS')) -->
+
+
+<!-- # huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1), -->
+<!-- #                                   list(m2, grf_out2, dml_out2), -->
+<!-- #                                   list(m3, grf_out3, dml_out3), -->
+<!-- #                                   list(m4, grf_out4, dml_out4)), -->
+<!-- #                  treatment = 'organized_lighting_mean'), -->
+<!-- #                  statistics = NA) %>% -->
+<!-- #   huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::insert_row(c('Estado FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::insert_row(c('Estado clustered SE', 'Yes', 'Yes', 'Yes', 'No'), after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"') %>% -->
+<!-- #   # huxtable::set_width(1) %>% -->
+<!-- #   # huxtable::set_all_padding(0) %>% -->
+<!-- #   write_rds(here('replication', 'nussio_ag_tab.RDS')) -->
+<!-- #  -->
+<!-- # read_rds(here('replication', 'nussio_ag_tab.RDS')) -->
+
+<!-- # names(grf_out1) <- c('estimate', 'std.error') -->
+<!-- # tidy(m1) %>% -->
+<!-- #   filter(term == 'organized_lighting_mean') %>% -->
+<!-- #   bind_rows(mutate(bind_rows(grf_out1))) %>% -->
+<!-- #   mutate(term = c('original', 'TMLE (GRF)'), p.value = p_val(estimate, std.error)) %>% -->
+<!-- #   huxtable::huxreg() -->
+
+<!-- ``` -->
+
+<!-- ```{r nussio-ne, eval = F} -->
+<!-- nussio_ne <- read_dta(here('replication/nussio_2024',  -->
+<!--                            'Mexico Municipality Panel Data.dta')) %>% -->
+<!--   # filter(if_all(c(loglynchpermio, organized_lighting_mean), ~!is.na(.x))) %>% -->
+<!--   mutate(cve_num = as.numeric(cve), -->
+<!--          year_num = year, -->
+<!--          year = as.factor(year), -->
+<!--          cve = cve, -->
+<!--          cve = as.factor(cve)) %>% -->
+<!--   # mutate(across(c(PARP, IT1, ED, BASURA), as.numeric), -->
+<!--   #        cve_col_num = as.integer(factor(cve_col))) %>% -->
+<!--   as_factor() -->
+
+<!-- # m1 <- lm(lynch_event ~ eq2017_250X2017 + year + cve, data = nussio_ne) %>% -->
+<!-- #   lmtest::coeftest(., vcov = sandwich::vcovCL(., ~cve)) -->
+
+<!-- # m1 <- fixest::feols(lynch_event ~ eq2017_250X2017 | year + cve,  -->
+<!-- #               data = nussio_ne) %>% -->
+<!-- #   summary(vcov = ~cve) %>% -->
+<!-- #   tidy() -->
+
+
+<!-- m1 <- data.frame(estimate = 0.108, std.error = 0.019) -->
+<!-- m2 <- data.frame(estimate = 0.113, std.error = 0.021) -->
+<!-- m3 <- data.frame(estimate = 0.087, std.error = 0.019) -->
+<!-- m4 <- data.frame(estimate = 0.126, std.error = 0.026) -->
+<!-- m5 <- data.frame(estimate = -0.010, std.error = 0.002) -->
+<!-- m6 <- data.frame(estimate = -0.009, std.error = 0.002) -->
+
+
+
+<!-- # M1 -->
+<!-- m1_grf_dml <- dml_grf(outcome = 'lynch_event',  -->
+<!--         treatment = 'eq2017_250X2017',  -->
+<!--         covariates = c('year_num'),  -->
+<!--         clustervar = 'cve_num', -->
+<!--         dataset = nussio_ne, -->
+<!--         target = 'treated', -->
+<!--         drop_na_grf = T) -->
+
+<!-- # M2 -->
+<!-- m2_grf_dml <- dml_grf(outcome = 'lynch_event',  -->
+<!--         treatment = 'eq2017_250X2017',  -->
+<!--         covariates = c('year_num', 'homicidefull', 'robofull', 'secuestrofull', 'inegi_infant_mort'),  -->
+<!--         clustervar = 'cve_num', -->
+<!--         dataset = nussio_ne, -->
+<!--         target = 'treated', -->
+<!--         drop_na_grf = T) -->
+
+<!-- # M3 -->
+<!-- m3_grf_dml <- dml_grf(outcome = 'lynch_event',  -->
+<!--         treatment = 'eq2017_damageX2017',  -->
+<!--         covariates = c('year_num'),  -->
+<!--         clustervar = 'cve_num', -->
+<!--         dataset = nussio_ne, -->
+<!--         target = 'treated', -->
+<!--         drop_na_grf = T) -->
+
+<!-- # M4 -->
+<!-- m4_grf_dml <- dml_grf(outcome = 'lynch_event',  -->
+<!--         treatment = 'eq2017_damageX2017',  -->
+<!--         covariates = c('year_num', 'homicidefull', 'robofull', 'secuestrofull', 'inegi_infant_mort'),  -->
+<!--         clustervar = 'cve_num', -->
+<!--         dataset = nussio_ne, -->
+<!--         target = 'all', -->
+<!--         drop_na_grf = T) -->
+
+<!-- # # M5 -->
+<!-- # m5_grf_dml <- dml_grf(outcome = 'lynch_event',  -->
+<!-- #         treatment = 'eq2017_dist100X2017',  -->
+<!-- #         covariates = c('year_num'),  -->
+<!-- #         clustervar = 'cve_num', -->
+<!-- #         dataset = nussio_ne, -->
+<!-- #         target = 'all', -->
+<!-- #         drop_na_grf = T) -->
+<!-- #  -->
+<!-- # # M6 -->
+<!-- # m6_grf_dml <- dml_grf(outcome = 'lynch_event',  -->
+<!-- #         treatment = 'eq2017_dist100X2017',  -->
+<!-- #         covariates = c('year_num', 'homicidefull', 'robofull', 'secuestrofull', 'inegi_infant_mort'),  -->
+<!-- #         clustervar = 'cve_num', -->
+<!-- #         dataset = nussio_ne, -->
+<!-- #         target = 'all', -->
+<!-- #         drop_na_grf = T) -->
+
+
+<!-- compare_tbl(model_list = list( -->
+<!--                  append(list(original = m1), m1_grf_dml), -->
+<!--                  append(list(original = m2), m2_grf_dml),  -->
+<!--                  append(list(original = m3), m3_grf_dml), -->
+<!--                  append(list(original = m4), m4_grf_dml), -->
+<!--             treatment = NULL, -->
+<!--             tidy = F) %>% -->
+<!--   write_rds(here('replication', 'nussio_ne_rep.RDS')) -->
+
+<!-- # Final table -->
+<!-- # huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1), -->
+<!-- #                                   list(m2, grf_out2, dml_out2), -->
+<!-- #                                   list(m3, grf_out3, dml_out3), -->
+<!-- #                                   list(m4, grf_out4, dml_out4), -->
+<!-- #                                   list(m5, grf_out5, dml_out5), -->
+<!-- #                                   list(m6, grf_out6, dml_out6)), -->
+<!-- #                              tidy = F), -->
+<!-- #                  statistics = NA) %>% -->
+<!-- #   huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes', 'No', 'Yes'),  -->
+<!-- #                        after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>% -->
+<!-- #   write_rds(here('replication', 'nussio_ne_tab.RDS')) -->
+<!-- #  -->
+<!-- # read_rds(here('replication', 'nussio_ne_tab.RDS')) -->
+<!-- ``` -->
+
+
+
+
+<!-- These simulations suggest that double robust methods with flexible machine learning algorithms may show some gains in bias reduction compared to traditional methods such as linear OLS regression. However, do these methods make a difference in practice? In this section, I replicate results from recent *American Sociological Review* articles using two double robust methods. I chose three papers that meet the following criteria: the authors were trying to estimate a causal effect, they used OLS or logistic regression, and they  posted replication code and data.   -->
+
+<!-- The first paper I replicate is "Commitment through Sacrifice: How Longer Ramadan Fasting Strengthens Religiosity and Political Islam," by @aksoy_2022_commitment. Using the natural variation in daylight from year to year during Ramadan, the authors test the relationship between Ramadan fasting time and the vote share of Islamist political parties in Turkey. The second paper is "They Can’t All Be Stars: The Matthew Effect, Cumulative Status Bias, and Status Persistence in NBA All-Star Elections" [@biegert_2023_they]. The authors use detailed records on NBA players' performance to study the effect of the previous year's All-Star nomination on being re-nominated in the current year. Lastly, I replicate "The 'Dark Side' of Community Ties: Collective Action and Lynching in Mexico" [@nussio_2024_dark]. The author estimates the effect of community ties in Mexico on individual participation in lynching or lynching rates at aggregate levels. -->
+
+
+<!-- ## Evaluation Strategy -->
+
+<!-- I replicate these papers using two double robust methods with machine learning. First, I use AIPW in conjunction with generalized random forests (GRF) using the `grf` package [@tibshirani_2024_grf]. Second, I use a partially linear model for DML with a SuperLearner that, like above, harnesses ensemble learning with GLM, glmnet, and XGBoost, using the `DoubleML` package [@bach_2022_doubleml].^[In the Supplementary Material, I present the results of using these packages to estimate the full set of simulations shown above. Results are fairly similar to my own R code, though computation time is notably faster.] Note that AIPW with GRF allows for heterogeneous treatment effects, while this version of DML does not. I use packages rather than my own R code for two reasons. First, these packages calculate asymptotic standard errors without the need for bootstrapping, allowing straightforward comparison with the statistical significance of results in the original papers. Second, both packages allow clustering of standard errors, which all three papers employ.   -->
+
+<!-- Two aspects of these replications deserve further explanation. First, it is common in social science to drop observations with missing data for some covariates, a technique called the "complete case method" or "listwise deletion." Two of these papers deal with missing data in this way -- by decreasing the sample size. Some machine learning methods, on the other hand, use missing data informatively [@mayer_2020_doubly]; the `grf` package allows covariates (but not the outcome or treatment assignment) to be missing, using missingness itself as a splitting criterion in growing trees. Hence for data with moderate levels of missingness, I allow `grf` to work with the entire dataset. For `DoubleML`, I use the same samples as in the original papers -- in these cases only observations with complete cases for a given regression model. An exception is Table 5 for @nussio_2024_dark, where the number of observations with missing control variables is far larger than the number without missing data; hence I drop incomplete cases for all analyses. I describe the exact procedures for handling missingness in the notes for each table of results in the Supplementary Material.   -->
+
+<!-- The second aspect is fixed effects. Fixed effects are commonly used in linear models; beginning with a categorical variable with $k$ group labels, one hot encoding converts this to $k-1$ dichotomous variables, and these are entered into the regression linearly. These are meant to account for between-group differences [@firebaugh_2013_fixed]. In the papers replicated here, @aksoy_2022_commitment use these types of fixed effects in all models, @biegert_2023_they use no fixed effects, and @nussio_2024_dark uses fixed effects in some models (details are in the table notes in the Supplementary Material). In many machine learning methods, categorical variables cannot be easily incorporated [@johannemann_2021_sufficient]. Adding a large number of information-poor dichotomous variables to flexible tree methods like GRF and XGBoost does not have a fixed effects interpretation, since these methods can can interact any variable with any other and apply non-linear transformations. In cases where a researcher would want to use fixed effects for time and other variables with a natural ordering, these can be entered as a single continuous variable, whose effect the model will allow to vary nonlinearly. But categorical variables without a natural ordering -- such as individual or group fixed effects -- need special treatment. Recently, @clarke_2024_double have developed an extension to DML that incorporates group-level fixed effects. In the first set analyses, I do not adjust for individual or group fixed effects in the machine learning replications (even when the original paper's model does), but in the final part of this section of the Supplementary Material, I present two of Clarke and Polselli's approaches to incorporating fixed effects in DML. Results change very little from standard DML.   -->
+
+<!-- ## Results -->
+
+<!-- ```{r replications, fig.height = 8, fig.cap = 'Replications of ASR papers using double robust machine learning methods. Bars represent 95-percent asymptotic confidence intervals.'} -->
+<!-- aksoy_list <- readRDS(here('replication', 'aksoy_rep.RDS'))  -->
+<!-- aksoy_list[[1]]$model <- '(1) Base' -->
+<!-- aksoy_list[[2]]$model <- '(2) Covariates' -->
+<!-- aksoy_list[[3]]$model <- '(3) Lagged dependent variable' -->
+
+<!-- biegert_list <- readRDS(here('replication', 'biegert_rep.RDS'))  -->
+<!-- biegert_list[[1]]$model <- '(1) No controls' -->
+<!-- biegert_list[[2]]$model <- '(2) Baseline confounders' -->
+<!-- biegert_list[[3]]$model <- '(3) Prior situation + performance' -->
+<!-- biegert_list[[4]]$model <- '(4) Current performance' -->
+<!-- biegert_list[[5]]$model <- '(5) Current situation' -->
+
+<!-- nussio_ind_list <- readRDS(here('replication', 'nussio_ind_rep.RDS'))  -->
+<!-- nussio_ind_list[[1]]$model <- '(1) Base' -->
+<!-- nussio_ind_list[[2]]$model <- '(2) Some controls' -->
+<!-- nussio_ind_list[[3]]$model <- '(3) All controls' -->
+<!-- nussio_ind_list[[4]]$model <- '(4) Geographical FE' -->
+
+<!-- nussio_ag_list <- readRDS(here('replication', 'nussio_ag_rep.RDS'))  -->
+<!-- nussio_ag_list[[1]]$model <- '(1) Base' -->
+<!-- nussio_ag_list[[2]]$model <- '(2) Some controls' -->
+<!-- nussio_ag_list[[3]]$model <- '(3) All controls' -->
+<!-- nussio_ag_list[[4]]$model <- '(4) Geographical FE' -->
+
+<!-- nussio_ne_list <- readRDS(here('replication', 'nussio_ne_rep.RDS'))  -->
+<!-- nussio_ne_list[[1]]$model <- '(1) Within 250 km of earthquake' -->
+<!-- nussio_ne_list[[2]]$model <- '(2) Within 250 km of earthquake, controls' -->
+<!-- nussio_ne_list[[3]]$model <- '(3) Earthquake damage' -->
+<!-- nussio_ne_list[[4]]$model <- '(4) Earthquake damage, controls' -->
+
+<!-- bind_rows( -->
+<!--   mutate(bind_rows(aksoy_list), paper = 'A. Aksoy et al. (2022)'), -->
+<!--   mutate(bind_rows(biegert_list), paper = 'B. Biegert et al. (2022)'), -->
+<!--   mutate(bind_rows(nussio_ind_list), paper = 'C. Nussio et al. (2024) Table 2: Individual'), -->
+<!--   mutate(bind_rows(nussio_ag_list), paper = 'D. Nussio et al. (2024) Table 4: Aggregate'), -->
+<!--   mutate(bind_rows(nussio_ne_list), paper = 'E. Nussio et al. (2024) Table 5: Natural Experiment') -->
+<!--   ) %>% -->
+<!--   filter(term %in% c('Original', 'AIPW (GRF)', 'DML (SuperLearner)')) %>% -->
+<!--   mutate(term = factor(term, levels = unique({.$term})), -->
+<!--          paper = factor(paper, levels = unique({paper})), -->
+<!--          model = factor(model, levels = rev(unique({.$model})))) %>% -->
+<!--   ggplot(aes(x = model, y = estimate, color = term, shape = term)) + -->
+<!--   geom_hline(yintercept = 0, color = 'grey') + -->
+<!--   geom_pointrange(position = position_dodge(-0.7), -->
+<!--                   aes(ymin = estimate - 1.96*std.error, ymax = estimate + 1.96*std.error)) +  -->
+<!--   coord_flip() + -->
+<!--   facet_wrap(~paper, scales = 'free', ncol = 1) + -->
+<!--   labs(x = '', y = '') + -->
+<!--   theme(legend.position = 'bottom') -->
+<!-- ``` -->
+
+<!-- Results of the replications are shown in Figure \@ref(fig:replications), with tables of coefficients and explanatory notes in the Supplementary Material. For each paper, I replicate the main results. I do not replicate models testing mechanisms, interactions, mediators, or placebos.   -->
+
+<!-- The first paper, "Commitment through Sacrifice: How Longer Ramadan Fasting Strengthens Religiosity and Political Islam" [@aksoy_2022_commitment], finds an OLS coefficient of about 7, implying a half-hour increase in fasting time is associated with a 3.5 percentage point increase in Islamist vote share. As shown in Figure \@ref(fig:replications) Panel A, coefficients using the double robust methods are noticeably smaller (though not significantly different from the original coefficients). In Model 2, which includes covariates, the main coefficient is nonsignificant at the 5-percent level. In both cases, the double robust estimates are more precise, with smaller standard errors than the OLS results.   -->
+
+<!-- The second paper, "They Can’t All Be Stars: The Matthew Effect, Cumulative Status Bias, and Status Persistence in NBA All-Star Elections" [@biegert_2023_they]. The authors use logistic regression to estimate the effect of the previous year's All-Star nomination on being re-nominated in the current year. Panel B of Figure \@ref(fig:replications) shows the average marginal effects from the authors' original regressions alongside the double robust replications. Models 1 and 2 do not control for previous performance and find that a previous year's nomination increases the likelihood of being nominated by 45 to 60 percentage points. Model 3 isolates the effect of the previous year's nomination from performance in the previous year; the original paper found a much smaller coefficient once these controls were incorporated, giving a marginal effect of about 5 percentage points, but the double robust methods estimate large effect sizes, at 30 and 59 percentage points for AIPW (GRF) and DML (SuperLearner), respectively. Models 4 and 5 control for other current factors, and double robust estimates are somewhat smaller than in Model 3 but still much larger than the original paper's estimates.   -->
+
+<!-- The third and final paper for replication is "The 'Dark Side' of Community Ties: Collective Action and Lynching in Mexico" [@nussio_2024_dark]. I present his three main analyses as separate panels. In his first analyses, he looks at individual propensity to participate in a lynching, using the log number of names of people a respondent knows in his or her colonia (neighborhood) in Mexico City as the independent variable. In OLS models with and without controls, the author finds a coefficient of about 0.03 for the logged variable, implying that a one-percent increase in names known is associated with about 0.0003 percentage points greater likelihood of participating in a lynching. As shown in Panel C of Figure \@ref(fig:replications), For AIPW (GRF), coefficients and statistical significance are very similar to the original OLS coefficients. DML (SuperLearner), however, shows nonsignificant or negative effects.   -->
+
+<!-- Panel D of Figure \@ref(fig:replications) replicates Nussio's [-@nussio_2024_dark] second analysis, which aggregates to the municipal level. Models estimate the effect of neighborly cooperation -- operationalized by the proportion of respondents who think that most neighbors help each other in problems related to electric lighting -- on the log municipal lynching rate. The original OLS estimate was fairly stable across models with controls, at about a one percentage point increase in neighborly cooperation associated with a two-percent increase in the lynching rate [$\exp(2/100) = 1.02$]. This estimate is fairly stable across estimators, though (as shown in the Supplementary Material) this is one case where incorporating fixed effects in the DML models reduces coefficient sizes.   -->
+
+<!-- Finally, Panel E of Figure \@ref(fig:replications) replicates Nussio's [-@nussio_2024_dark] natural experiment, where he estimates the effect of the Puebla earthquake on September 19, 2017, on the number of lynching events in a municipality, using panel data from 2000 to 2020. The original OLS models found that municipalities within 250 km of the earthquake or that experienced earthquake damage experienced an increase of about 0.1 in the number of lynchings in years after 2017 (the mean yearly lynchings per municipality is 0.034). While models for AIPW (GRF) are fairly similar to the original OLS estimates, DML (SuperLearner) estimates are double the original estimates.  -->
+
+<!-- These replications show that results from the original OLS or logistic regressions that these papers employed are fairly robust. In most cases, effect sign and statistical significance are consistent across the original and double robust estimators. Notably, effect sizes for @aksoy_2022_commitment in the double robust models are smaller than the OLS estimates, reaching nonsignificance in one case. DML (SuperLearner) estimates for Nussio's [-@nussio_2024_dark] individual analysis change sign and significance, while the AIPW (GRF) estimates are close to the OLS estimates. However, the simulation results presented in the previous section suggested that the DML (SuperLearner) estimator has higher RMSE than both OLS and AIPW (GRF) (Figure \@ref(fig:dorie-results-rmse)), so perhaps the original results are reliable.^[The Supplementary Material shows that the DoubleML package with the SuperLearner has higher bias and RMSE in the simulations than my own R code.] Overall, these replications highlight the importance of testing the robustness of estimates to different models; double robust, machine learning methods sometimes do produce substantively different results from traditional methods.   -->
+
+<!-- ## Replications with Fixed Effects -->
+
+<!-- The tables below present estimates from the *ASR* replications discussed above, but with the addition of two other models implementing methods proposed by @clarke_2024_double that incorporate individual or group fixed effects into DML. The authors' package, `XTDML`, builds on the `DoubleML` package. I use two of their procedures. First, correlated random effects (CRE) models explicitly model the correlation between the group-level components in both the treatment and outcome models. Second, the authors' "hybrid" model combines CRE with a within-group estimator that partials out group means from all variables, similar to the mechanics of fixed effects in OLS. I present results using fixed effects for each model, whether or not the original model uses fixed effects. The original models from @aksoy_2022_commitment use fixed effects throughout. @biegert_2023_they do not employ fixed effects in any of their original models. @nussio_2024_dark uses fixed effects in the fourth model in Tables 2 and 4 and in all models in Table 5. -->
+
+
+<!-- ```{r rep-aksoy} -->
+<!-- readRDS(here('replication', 'aksoy_rep.RDS')) %>% -->
+<!--   huxtable::huxreg(statistics = NA, -->
+<!--                    note = '{stars}. Covariates include GDP growth, population, turnout, number of parliamentary seats in province in Model 2 and 3; Models 3 also adjusts for the lagged value of the dependent variable (i.e., one election lagged Islamic votes); cluster robust standard errors are in parentheses. The AIPW (GRF) model does not drop incomplete observations.') %>% -->
+<!--   huxtable::insert_row(c('Covariates', 'No', rep('Yes', 2)), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Lagged dependent variable', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Election year fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Province fixed effects', 'Yes', 'Yes', 'Yes'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-4):(nrow(.)-1), value = 0) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-4), 2:4) %>% -->
+<!--   huxtable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"') %>% -->
+<!--   huxtable::set_width(.8) %>% -->
+<!--   huxtable::set_all_padding(0) %>% -->
+<!--   huxtable::set_latex_float('h!') -->
+
+<!-- # read_rds(here('replication', 'aksoy_tab.RDS')) %>% -->
+<!-- #   huxtable::as_flextable() %>% -->
+<!-- #   flextable::hline(7:8, 1:4, border = officer::fp_border(width = 0)) %>% -->
+<!-- #   flextable::hline(7, 2:4) %>% -->
+<!-- #   flextable::hline(9) %>% -->
+<!-- #   flextable::set_caption('Replication of Aksoy et al. (2022) Table 2, models for outcome of Islamic Votes: "Effect of Fasting Hours (Daylength) during Ramadan on Various Outcome Variables Based on Regression Models That Include Fixed Effects for Provinces and Election Years"') -->
+<!-- ``` -->
+
+<!-- \newpage -->
+
+<!-- ```{r rep-biegert} -->
+<!-- readRDS(here('replication', 'biegert_rep.RDS')) %>% -->
+<!--   huxtable::huxreg(statistics = NA, -->
+<!--                    note = '{stars}. With no control variables, Model 1 could not be estimated using DML with a SuperLearner. Model 2 adjusts for year (fixed effects in original model), height (cm), position, age at league entry, being Black, and NBA tenure. Model 3 adds controls for the previous year\'s average points per 36 minutes, average assists per 36 minutes, average rebounds per 36 minutes, minutes played, whether the team reached playoffs, the team\'s win percentage, and whether it was a big market team. Model 4 adds controls for current average points, average assists, and average rebounds per 36 minutes. Model 5 additionally controls for current minutes played, whether the team reaches the playoffs, the team win percentage, and whether it is a big market team. Player clustered standard errors are in parentheses. None of the original models includes player fixed effects. The AIPW (GRF) model does not drop incomplete observations.') %>% -->
+<!--   huxtable::insert_row(c('Baseline confounders', 'No', rep('Yes', 4)), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Prior situation + performance', rep('No', 2), rep('Yes', 3)), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Current performance', rep('No', 3), rep('Yes', 2)), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Current situation', rep('No', 4), rep('Yes', 1)), after = nrow(.) - 1) %>% -->
+<!--   # huxtable::insert_row(c('Cumul. AS + cumul. mediators', rep('No', 5), 'Yes'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-4):(nrow(.)-1), value = 0) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-4), 2:6) %>% -->
+<!--   huxtable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"') %>% -->
+<!--   huxtable::set_width(1) %>% -->
+<!--   huxtable::set_all_padding(0) %>% -->
+<!--   huxtable::set_latex_float('h!') -->
+
+
+<!-- # read_rds(here('replication', 'biegert_tab.RDS')) %>% -->
+<!-- #   huxtable::as_flextable() %>% -->
+<!-- #   flextable::hline(7:11, 1:7, border = officer::fp_border(width = 0)) %>% -->
+<!-- #   flextable::hline(7, 2:7) %>% -->
+<!-- #   flextable::padding(padding = 0, part = "all") %>%  -->
+<!-- #   flextable::autofit() %>% -->
+<!-- #   flextable::hline(12) %>% -->
+<!-- #   flextable::set_caption('Replication of Biegert et al. (2023) Table 3: "Average Marginal Effects from Logistic Regression Models of All-Star Nomination"') -->
+<!-- ``` -->
+
+<!-- \newpage -->
+
+<!-- ```{r rep-nussio-ind} -->
+<!-- readRDS(here('replication', 'nussio_ind_rep.RDS')) %>% -->
+<!--   huxtable::huxreg(statistics = NA, -->
+<!--                    note = "{stars}. Data come from a representative survey of residents of Mexico City conducted in February 2022. Models estimate the effect of the log number of names that respondents know in their colonia (neighborhood) on whether they had ever participate in a lynching. Model 1 controls for the extent to which people trust others living in their neighborhood. Model 2 adds controls for education, age, female, number of light bulbs, and unemployment. Model 3 additionally controls for employment, being Catholic or non-religious, whether someone has participated in a fight, whether parents live in the colonia, trust in government, garbage on the street, and residential street block. Colonia clustered standard errors are in parentheses. Model 4 adds colonia fixed effects. The AIPW (GRF) model does not drop incomplete observations.") %>% -->
+<!--   huxtable::insert_row(c('Colonia FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-2):(nrow(.)-1), value = 0) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-2), 2:5) %>% -->
+<!--   huxtable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"') %>% -->
+<!--   huxtable::set_width(.8) %>% -->
+<!--   huxtable::set_all_padding(0) %>% -->
+<!--   huxtable::set_latex_float('h!') -->
+
+
+
+<!-- # read_rds(here('replication', 'nussio_ind_tab.RDS')) %>% -->
+<!-- #   huxtable::as_flextable() %>% -->
+<!-- #   flextable::hline(7:8, 1:5, border = officer::fp_border(width = 0)) %>% -->
+<!-- #   flextable::hline(7, 2:5) %>% -->
+<!-- #   flextable::hline(9) %>% -->
+<!-- #   flextable::set_caption('Replication of Nussio (2024) Table 2: "Individual-Level Analysis: Community Ties and Lynching Participation"') -->
+<!-- ``` -->
+
+<!-- \newpage -->
+
+<!-- ```{r rep-nussio-ag} -->
+<!-- readRDS(here('replication', 'nussio_ag_rep.RDS')) %>% -->
+<!--   huxtable::huxreg(statistics = NA, -->
+<!--                    note = "{stars}. Models estimate the effect of neighborly cooperation -- operationalized by the proportion of respondents who think that most neighbors help each other in problems related to electric lighting -- on the log municipal lynching rate. Model 1 adds controls for the proportion of respondents in a municipality that trust their neighbors. Model controls for population, area in square kilometers, poverty rate, Gini coefficient, share indigenous people, non-religious population, homicide rate, and robbery rate. Model 3 adds controls for household victimization and trust in army. Model 4 adds estado (state) fixed effects. Municipality clustered standard errors are in paratheses. The AIPW (GRF) model does not drop incomplete observations.") %>% -->
+<!--   huxtable::insert_row(c('Control variables', 'No', 'Some', 'All', 'All'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Estado FE', 'No', 'No', 'No', 'Yes'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::insert_row(c('Estado clustered SE', 'Yes', 'Yes', 'Yes', 'No'), after = nrow(.) - 1) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-3):(nrow(.)-1), value = 0) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-3), 2:5) %>% -->
+<!--   huxtable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"') %>% -->
+<!--   huxtable::set_width(.8) %>% -->
+<!--   huxtable::set_all_padding(0) %>% -->
+<!--   huxtable::set_latex_float('h!') -->
+
+<!-- # read_rds(here('replication', 'nussio_ag_tab.RDS')) %>% -->
+<!-- #   huxtable::as_flextable() %>% -->
+<!-- #   flextable::hline(7:9, 1:5, border = officer::fp_border(width = 0)) %>% -->
+<!-- #   flextable::hline(7, 2:5) %>% -->
+<!-- #   flextable::hline(10) %>% -->
+<!-- #   flextable::set_caption('Replication of Nussio (2024) Table 4: "Aggregate-Level Analysis: Community Ties and Lynching Rate"') -->
+<!-- ``` -->
+
+<!-- \newpage -->
+
+<!-- ```{r rep-nussio-ne} -->
+<!-- readRDS(here('replication', 'nussio_ne_rep.RDS')) %>% -->
+<!--   huxtable::huxreg(statistics = NA, -->
+<!--                    note = "{stars}. Models estimate the effect of the Puebla earthquake on September 19, 2017, on the number of lynching events. Data is a panel of Mexican municipalities from 2000 to 2020. Specific independent variables include having an earthquake within 250 km (Models 1 and 2) or having earthquake damage (Models 3 and 4), each interacted with a post-2017 indicator variable. Municipality clustered standard errors are in parentheses. The original models include two-way fixed effects for year and municipality. Model 2 and 4 additionally control for homicides, robberies, kidnappings, and infant mortality. Machine learning models control for year. All models drop incomplete observations; Models 1, and 3 have 51,597 observations, while Models 2, and 4 have 17,225 observations. Due to complications with continuous treatment effects, I do not present the original Models 5 and 6, where the independent variable was distance from the earthquake.") %>% -->
+<!--   huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes'),  -->
+<!--                        after = nrow(.) - 1) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-1):(nrow(.)-1), value = 0) %>% -->
+<!--   huxtable::set_top_border((nrow(.)-1), 2:5) %>% -->
+<!--   huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>% -->
+<!--   huxtable::set_width(.8) %>% -->
+<!--   huxtable::set_all_padding(0) %>% -->
+<!--   huxtable::set_latex_float('h!') -->
+
+
+
+<!-- # Final table -->
+<!-- # huxtable::huxreg(compare_tbl(list(list(m1, grf_out1, dml_out1), -->
+<!-- #                                   list(m2, grf_out2, dml_out2), -->
+<!-- #                                   list(m3, grf_out3, dml_out3), -->
+<!-- #                                   list(m4, grf_out4, dml_out4), -->
+<!-- #                                   list(m5, grf_out5, dml_out5), -->
+<!-- #                                   list(m6, grf_out6, dml_out6)), -->
+<!-- #                              tidy = F), -->
+<!-- #                  statistics = NA) %>% -->
+<!-- #   huxtable::insert_row(c('Control variables', 'No', 'Yes', 'No', 'Yes', 'No', 'Yes'),  -->
+<!-- #                        after = nrow(.) - 1) %>% -->
+<!-- #   huxtable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') %>% -->
+
+<!-- # read_rds(here('replication', 'nussio_ne_tab.RDS')) %>% -->
+<!-- #   huxtable::as_flextable() %>% -->
+<!-- #   flextable::hline(7, 1:7, border = officer::fp_border(width = 0)) %>% -->
+<!-- #   flextable::hline(7, 2:7) %>% -->
+<!-- #   flextable::hline(8) %>% -->
+<!-- #   flextable::padding(padding = 0, part = "all") %>%  -->
+<!-- #   flextable::autofit() %>% -->
+<!-- #   flextable::set_caption('Replication of Nussio (2024) Table 5: "Natural Experiment: Earthquake Exposure and Lynching"') -->
+<!-- ``` -->
+
+
+<!-- \newpage -->
+
+
+<!-- # References -->
+
+<!-- <div id="refs"></div> -->
